@@ -4,6 +4,11 @@ from pathlib import Path
 import cv2
 import numpy as np
 
+try:
+    from ai.shadow_removal import run_ai_shadow_removal
+except ImportError:
+    run_ai_shadow_removal = None
+
 
 def order_points(pts: np.ndarray) -> np.ndarray:
     """Order 4 corner points as top-left, top-right, bottom-right, bottom-left (for perspective transform)"""
@@ -37,6 +42,20 @@ def four_point_transform(image: np.ndarray, pts: np.ndarray) -> np.ndarray:
     M = cv2.getPerspectiveTransform(rect, dest)
     w, h = int(dest[2][0]), int(dest[2][1])
     return cv2.warpPerspective(image, M, (w, h), flags=cv2.INTER_LINEAR)
+
+
+def paper_whiten(gray: np.ndarray, kernel_size: int = 51, max_gain: float = 0.95, blend: float = 0.6) -> np.ndarray:
+    """Mild background flattening to reduce paper bleed / show-through, avoid shadow at edges"""
+    if len(gray.shape) == 3:
+        gray = cv2.cvtColor(gray, cv2.COLOR_BGR2GRAY)
+    gray_f = np.clip(gray.astype(np.float32), 1, 255)
+    kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (kernel_size, kernel_size))
+    background = cv2.morphologyEx(gray.astype(np.uint8), cv2.MORPH_OPEN, kernel)
+    background = np.maximum(background.astype(np.float32), 1)
+    gain = np.minimum(255.0 / background, max_gain)
+    whitened = np.clip(gray_f * gain, 0, 255).astype(np.float32)
+    out = np.clip(blend * whitened + (1 - blend) * gray_f, 0, 255).astype(np.uint8)
+    return out
 
 
 def scan(img: np.ndarray):
@@ -92,7 +111,14 @@ def scan(img: np.ndarray):
     return aligned
 
 
-def process_image(path: Path, output_dir: Path, binarize: bool = True) -> None:
+def process_image(
+    path: Path,
+    output_dir: Path,
+    binarize: bool = True,
+    ai_enhance: bool = False,
+    whiten: bool = True,
+    sharpen: float = 0.55,
+) -> None:
     image = cv2.imread(str(path))
     if image is None:
         print(f"[WARN] Could not read image: {path}")
@@ -109,31 +135,32 @@ def process_image(path: Path, output_dir: Path, binarize: bool = True) -> None:
             image = cv2.resize(image, None, fx=scale, fy=scale, interpolation=cv2.INTER_AREA)
         aligned = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
 
+    # Optional AI shadow removal before enhance; only for BGR aligned
+    if ai_enhance and run_ai_shadow_removal is not None and len(aligned.shape) == 3:
+        aligned = run_ai_shadow_removal(aligned)
+
     output_dir.mkdir(parents=True, exist_ok=True)
 
-    if binarize and len(aligned.shape) == 3:
-        # Grayscale (luminance only)
-        processed = cv2.cvtColor(aligned, cv2.COLOR_BGR2GRAY)
-
-        # Denoise: bilateral keeps edges, smooths flat regions; d=5, sigma 25 = mild
-        processed = cv2.bilateralFilter(processed, d=5, sigmaColor=25, sigmaSpace=25)
-
+    if binarize:
+        # Grayscale if needed
+        processed = cv2.cvtColor(aligned, cv2.COLOR_BGR2GRAY) if len(aligned.shape) == 3 else aligned.copy()
+        # Paper whitening: flatten background, reduce show-through and shadows
+        if whiten:
+            processed = paper_whiten(processed, kernel_size=51)
         # Contrast + brightness: linear stretch for scanner-style pop
-        processed = np.clip(processed.astype(np.float32) * 1.18 + 8, 0, 255).astype(np.uint8)
-
+        processed = np.clip(processed.astype(np.float32) * 1.1 + 18, 0, 255).astype(np.uint8)
         # Local contrast (CLAHE): text and lines pop without global over-enhance
         clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8))
         processed = clahe.apply(processed)
-
-        # Sharpen: unsharp mask with amount 0.4 for crisper text
-        blurred = cv2.GaussianBlur(processed, (0, 0), 1.2)
-        processed = np.clip(
-            processed.astype(np.float32) + 0.4 * (processed.astype(np.float32) - blurred.astype(np.float32)),
-            0, 255,
-        ).astype(np.uint8)
-
+        # Sharpen: unsharp mask (sigma 0.9, amount from --sharpen)
+        if sharpen > 0:
+            blurred = cv2.GaussianBlur(processed, (0, 0), 0.9)
+            processed = np.clip(
+                processed.astype(np.float32) + sharpen * (processed.astype(np.float32) - blurred.astype(np.float32)),
+                0, 255,
+            ).astype(np.uint8)
         out_path = output_dir / f"{path.stem}_scanned.jpg"
-        cv2.imwrite(str(out_path), processed)
+        cv2.imwrite(str(out_path), processed, [cv2.IMWRITE_JPEG_QUALITY, 95])
     else:
         processed = aligned
         out_path = output_dir / f"{path.stem}_scanned.jpg"
@@ -148,26 +175,32 @@ def process_image(path: Path, output_dir: Path, binarize: bool = True) -> None:
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Document scanner: detect doc quad, warp, optional grayscale + enhance.")
-    parser.add_argument("--input", type=str, required=True, help="Input image or directory.")
-    parser.add_argument("--output", type=str, required=True, help="Output directory.")
-    parser.add_argument("--no-binarize", action="store_true", help="Save only aligned color, skip grayscale + enhance.")
+    parser = argparse.ArgumentParser(description="Document scanner: detect doc quad, warp, optional grayscale + enhance")
+    parser.add_argument("--input", type=str, required=True, help="Input image or directory")
+    parser.add_argument("--output", type=str, required=True, help="Output directory")
+    parser.add_argument("--no-binarize", action="store_true", help="Save only aligned color, skip grayscale + enhance")
+    parser.add_argument("--ai-enhance", action="store_true", help="Run DocRes deshadowing (set DOCRES_DIR)")
+    parser.add_argument("--no-whiten", action="store_true", help="Disable paper whitening")
+    parser.add_argument("--sharpen", type=float, default=0.55, metavar="N", help="Unsharp mask amount (0=off, 0.55=default)")
     args = parser.parse_args()
     input_path = Path(args.input)
     output_dir = Path(args.output)
     binarize = not args.no_binarize
+    ai_enhance = args.ai_enhance
+    whiten = not args.no_whiten
+    sharpen = max(0.0, min(1.5, args.sharpen))
 
     if input_path.is_dir():
         images = sorted(
             p for p in input_path.iterdir() if p.suffix.lower() in {".jpg", ".jpeg", ".png"}
         )
         if not images:
-            print("[INFO] No images in directory.")
+            print("[INFO] No images in directory")
             return
         for p in images:
-            process_image(p, output_dir, binarize=binarize)
+            process_image(p, output_dir, binarize=binarize, ai_enhance=ai_enhance, whiten=whiten, sharpen=sharpen)
     else:
-        process_image(input_path, output_dir, binarize=binarize)
+        process_image(input_path, output_dir, binarize=binarize, ai_enhance=ai_enhance, whiten=whiten, sharpen=sharpen)
 
 
 if __name__ == "__main__":
