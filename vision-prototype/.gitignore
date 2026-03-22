@@ -1,0 +1,12 @@
+# AI deps (DocRes clone + weights)
+deps/
+*.pkl
+scanned-output/
+
+# Python
+.venv/
+__pycache__/
+*.pyc
+
+# Local
+terminal_output.txt
