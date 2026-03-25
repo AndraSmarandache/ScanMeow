@@ -37,6 +37,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.tooling.preview.Preview
@@ -59,11 +60,16 @@ private val sampleRecentDocuments = listOf(
 @Composable
 fun MainHomeScreen(
     modifier: Modifier = Modifier,
-    onScanDocumentClick: () -> Unit = {},
+    onScanDocumentClick: (drawableId: Int) -> Unit = {},
     onSeeAllClick: () -> Unit = {},
     onDocumentClick: (RecentDocument) -> Unit = {},
 ) {
     var bluetoothEnabled by remember { mutableStateOf(true) }
+    val context = LocalContext.current
+    // Use runtime lookup so Preview/app won't crash if drawable isn't present yet.
+    val demoDrawableId = remember {
+        context.resources.getIdentifier("demo_document", "drawable", context.packageName)
+    }
 
     // Keeps Bluetooth pinned to bottom even with only 1-2 recent items.
     Box(modifier = modifier.fillMaxSize()) {
@@ -92,7 +98,11 @@ fun MainHomeScreen(
                 horizontalArrangement = Arrangement.Center,
             ) {
                 Button(
-                    onClick = onScanDocumentClick,
+                    onClick = {
+                        if (demoDrawableId != 0) {
+                            onScanDocumentClick(demoDrawableId)
+                        }
+                    },
                     modifier = Modifier.heightIn(min = 56.dp),
                     colors = ButtonDefaults.buttonColors(
                         containerColor = ScanBlue,
@@ -107,6 +117,15 @@ fun MainHomeScreen(
                     Spacer(Modifier.width(8.dp))
                     Text(text = stringResource(R.string.scan_document))
                 }
+            }
+
+            if (demoDrawableId == 0) {
+                Spacer(Modifier.height(12.dp))
+                Text(
+                    text = "Add demo_document.png/jpg to res/drawable to enable Scan in emulator.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
             }
 
             Spacer(Modifier.height(24.dp))

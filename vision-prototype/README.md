@@ -2,6 +2,26 @@
 
 OpenCV-based document detection (morphology, GrabCut, perspective warp) plus optional grayscale enhance. Optional AI step for shadow removal and appearance (DocRes).
 
+## Local HTTP API (Android emulator / same PC)
+
+Run **OpenCV scanner** over HTTP on your laptop (`scanner.py` pipeline, same defaults as the CLI).
+
+```bash
+cd vision-prototype
+pip install -r requirements.txt -r requirements-api.txt
+uvicorn api_server:app --host 0.0.0.0 --port 8765
+```
+
+**Windows:** poți dublu-click pe `run_api.bat` în același folder (pornește uvicorn pe portul 8765).
+
+- Health: `GET http://127.0.0.1:8765/health`
+- Scan: `POST http://127.0.0.1:8765/scan` with multipart field `file` (JPEG/PNG bytes). Returns a JPEG.
+
+**Android emulator** cannot use `127.0.0.1` for the host PC; use **`http://10.0.2.2:8765`** instead.  
+**Physical phone** on the same Wi‑Fi: use the PC’s LAN address (e.g. `http://192.168.0.15:8765`).
+
+Optional query params: `binarize` (default `false` = color aligned like `*_aligned.jpg`; `true` = `*_scanned.jpg` style), `upright` (if `true`, rotate 90° when the page is wider than tall), `ai_enhance`, `whiten`, `sharpen`.
+
 ## Quick run
 
 **From repo root (ScanMeow):**

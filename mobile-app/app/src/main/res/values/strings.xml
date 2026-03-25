@@ -8,4 +8,13 @@
     <string name="bluetooth">Bluetooth</string>
     <string name="bluetooth_status_connected">Connected</string>
     <string name="bluetooth_status_disconnected">Disconnected</string>
+    <string name="scan_loading_aligned">Loading scan…</string>
+    <string name="scan_loading_final">Finishing…</string>
+    <string name="action_cancel">Cancel</string>
+    <string name="action_confirm">Confirm</string>
+    <string name="scan_done">Done</string>
+    <string name="error_invalid_image">Invalid image.</string>
+    <string name="toast_missing_demo_document">Add demo_document to drawable.</string>
+    <string name="toast_scan_failed">Scan failed: %1$s\nStart the API (run_api.bat / uvicorn on port 8765).</string>
+    <string name="toast_finalize_failed">Finalize failed: %1$s</string>
 </resources>
