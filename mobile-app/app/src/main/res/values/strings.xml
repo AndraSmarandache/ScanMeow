@@ -1,3 +1,11 @@
 <resources>
     <string name="app_name">ScanMeow</string>
+    <string name="content_desc_logo">ScanMeow logo</string>
+    <string name="scan_document">Scan document</string>
+    <string name="recent_documents">Recent documents</string>
+    <string name="see_all">See all</string>
+    <string name="content_desc_open_document">Open document</string>
+    <string name="bluetooth">Bluetooth</string>
+    <string name="bluetooth_status_connected">Connected</string>
+    <string name="bluetooth_status_disconnected">Disconnected</string>
 </resources>
