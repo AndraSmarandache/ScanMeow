@@ -8,7 +8,7 @@
     <string name="bluetooth">Bluetooth</string>
     <string name="bluetooth_status_connected">Connected</string>
     <string name="bluetooth_status_disconnected">Disconnected</string>
-    <string name="scan_loading_aligned">Loading scan…</string>
+    <string name="scan_loading_aligned">Scanning document…</string>
     <string name="scan_loading_final">Finishing…</string>
     <string name="action_cancel">Cancel</string>
     <string name="action_retake">Retake</string>

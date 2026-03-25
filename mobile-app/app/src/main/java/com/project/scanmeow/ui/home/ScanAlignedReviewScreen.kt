@@ -15,7 +15,6 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
-import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
@@ -42,7 +41,6 @@ private val MainAreaDarkGray = Color(0xFF3D3D3D)
 @Composable
 fun ScanAlignedReviewScreen(
     alignedJpeg: ByteArray,
-    isSubmitting: Boolean,
     onCancel: () -> Unit,
     onConfirm: () -> Unit,
     modifier: Modifier = Modifier,
@@ -69,10 +67,7 @@ fun ScanAlignedReviewScreen(
                         .heightIn(min = 56.dp),
                     verticalAlignment = Alignment.CenterVertically,
                 ) {
-                    IconButton(
-                        onClick = onCancel,
-                        enabled = !isSubmitting,
-                    ) {
+                    IconButton(onClick = onCancel) {
                         Icon(
                             imageVector = Icons.AutoMirrored.Filled.ArrowBack,
                             contentDescription = stringResource(R.string.content_desc_back),
@@ -120,7 +115,6 @@ fun ScanAlignedReviewScreen(
                 ) {
                     Button(
                         onClick = onCancel,
-                        enabled = !isSubmitting,
                         modifier = Modifier.weight(1f),
                         colors = ButtonDefaults.buttonColors(
                             containerColor = Color.Black,
@@ -132,7 +126,6 @@ fun ScanAlignedReviewScreen(
                     }
                     Button(
                         onClick = onConfirm,
-                        enabled = !isSubmitting,
                         modifier = Modifier.weight(1f),
                         colors = ButtonDefaults.buttonColors(
                             containerColor = ScanBlue,
@@ -142,25 +135,6 @@ fun ScanAlignedReviewScreen(
                     ) {
                         Text(stringResource(R.string.action_confirm))
                     }
-                }
-            }
-        }
-
-        if (isSubmitting) {
-            Box(
-                modifier = Modifier
-                    .fillMaxSize()
-                    .background(Color(0x66000000)),
-                contentAlignment = Alignment.Center,
-            ) {
-                Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                    CircularProgressIndicator(color = Color.White)
-                    Text(
-                        text = stringResource(R.string.scan_loading_final),
-                        color = Color.White,
-                        modifier = Modifier.padding(top = 12.dp),
-                        style = MaterialTheme.typography.bodyLarge,
-                    )
                 }
             }
         }

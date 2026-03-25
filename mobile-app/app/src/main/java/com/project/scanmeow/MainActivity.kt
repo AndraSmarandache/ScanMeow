@@ -61,7 +61,6 @@ class MainActivity : ComponentActivity() {
                 Scaffold(modifier = Modifier.fillMaxSize()) { innerPadding ->
                     var screen by remember { mutableStateOf<AppScreen>(AppScreen.Home) }
                     var sourceDrawableId by remember { mutableIntStateOf(0) }
-                    var isFinalizing by remember { mutableStateOf(false) }
 
                     when (val s = screen) {
                         AppScreen.Home -> MainHomeScreen(
@@ -108,15 +107,17 @@ class MainActivity : ComponentActivity() {
                             modifier = Modifier.padding(innerPadding),
                         )
 
+                        AppScreen.LoadingFinal -> ScanLoadingScreen(
+                            message = stringResource(R.string.scan_loading_final),
+                            modifier = Modifier.padding(innerPadding),
+                        )
+
                         is AppScreen.AlignedReview -> ScanAlignedReviewScreen(
                             alignedJpeg = s.jpeg,
-                            isSubmitting = isFinalizing,
-                            onCancel = {
-                                if (!isFinalizing) screen = AppScreen.Home
-                            },
+                            onCancel = { screen = AppScreen.Home },
                             onConfirm = {
-                                if (isFinalizing) return@ScanAlignedReviewScreen
-                                isFinalizing = true
+                                val alignedBytes = s.jpeg
+                                screen = AppScreen.LoadingFinal
                                 scope.launch {
                                     val result = runCatching {
                                         val jpeg = drawableToJpegBytes(context.resources, sourceDrawableId)
@@ -126,10 +127,10 @@ class MainActivity : ComponentActivity() {
                                             upright = true,
                                         )
                                     }
-                                    isFinalizing = false
                                     result.onSuccess { bytes ->
                                         screen = AppScreen.ScannedResult(bytes)
                                     }.onFailure { e ->
+                                        screen = AppScreen.AlignedReview(alignedBytes)
                                         Toast.makeText(
                                             context,
                                             context.getString(
@@ -160,6 +161,7 @@ class MainActivity : ComponentActivity() {
 private sealed interface AppScreen {
     data object Home : AppScreen
     data object LoadingAligned : AppScreen
+    data object LoadingFinal : AppScreen
     data class AlignedReview(val jpeg: ByteArray) : AppScreen
     data class ScannedResult(val jpeg: ByteArray) : AppScreen
 }
