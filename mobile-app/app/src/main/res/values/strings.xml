@@ -11,7 +11,9 @@
     <string name="scan_loading_aligned">Loading scan…</string>
     <string name="scan_loading_final">Finishing…</string>
     <string name="action_cancel">Cancel</string>
+    <string name="action_retake">Retake</string>
     <string name="action_confirm">Confirm</string>
+    <string name="content_desc_back">Go back</string>
     <string name="scan_done">Done</string>
     <string name="error_invalid_image">Invalid image.</string>
     <string name="toast_missing_demo_document">Add demo_document to drawable.</string>
