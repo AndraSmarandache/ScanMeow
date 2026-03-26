@@ -50,6 +50,8 @@ def _process_uploaded_bgr(
     sharpen: float,
     upright: bool,
 ) -> np.ndarray:
+    # AI enhancement is allowed only for final scanned output
+    ai_enhance = ai_enhance and binarize
     aligned = sc.scan(image)
     if aligned is None:
         dim_limit = 1080
@@ -57,7 +59,9 @@ def _process_uploaded_bgr(
         if max_dim > dim_limit:
             scale = dim_limit / max_dim
             image = cv2.resize(image, None, fx=scale, fy=scale, interpolation=cv2.INTER_AREA)
-        aligned = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
+        # For aligned preview we want only alignment / rotation, with no tonal changes
+        # If we fail to detect the document quad, fall back to the original color image (optionally resized)
+        aligned = image
 
     if ai_enhance and sc.run_ai_shadow_removal is not None and len(aligned.shape) == 3:
         aligned = sc.run_ai_shadow_removal(aligned)

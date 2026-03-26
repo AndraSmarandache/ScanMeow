@@ -82,6 +82,7 @@ class MainActivity : ComponentActivity() {
                                         http.postScanMultipart(
                                             jpegBytes = jpeg,
                                             binarize = false,
+                                            aiEnhance = false,
                                             upright = true,
                                         )
                                     }
@@ -124,6 +125,7 @@ class MainActivity : ComponentActivity() {
                                         http.postScanMultipart(
                                             jpegBytes = jpeg,
                                             binarize = true,
+                                            aiEnhance = true,
                                             upright = true,
                                         )
                                     }
@@ -182,6 +184,7 @@ private fun drawableToJpegBytes(
 private suspend fun OkHttpClient.postScanMultipart(
     jpegBytes: ByteArray,
     binarize: Boolean,
+    aiEnhance: Boolean,
     upright: Boolean,
 ): ByteArray = withContext(Dispatchers.IO) {
     val body = MultipartBody.Builder()
@@ -193,8 +196,9 @@ private suspend fun OkHttpClient.postScanMultipart(
         )
         .build()
     val b = if (binarize) "true" else "false"
+    val ai = if (aiEnhance) "true" else "false"
     val u = if (upright) "true" else "false"
-    val url = "$SCAN_API_BASE/scan?binarize=$b&upright=$u"
+    val url = "$SCAN_API_BASE/scan?binarize=$b&ai_enhance=$ai&upright=$u"
     val req = Request.Builder().url(url).post(body).build()
     newCall(req).execute().use { resp ->
         if (!resp.isSuccessful) error("HTTP ${resp.code}")
