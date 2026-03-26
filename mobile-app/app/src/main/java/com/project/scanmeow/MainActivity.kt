@@ -149,9 +149,11 @@ class MainActivity : ComponentActivity() {
 
                         is AppScreen.ScannedResult -> ScanResultScreen(
                             scannedJpeg = s.jpeg,
-                            onDone = { screen = AppScreen.Home },
+                            onCancel = { screen = AppScreen.Home },
+                            onShare = { screen = AppScreen.Home },
                             modifier = Modifier.padding(innerPadding),
-                            doneLabel = stringResource(R.string.scan_done),
+                            cancelLabel = stringResource(R.string.action_cancel),
+                            shareLabel = stringResource(R.string.action_share),
                         )
                     }
                 }

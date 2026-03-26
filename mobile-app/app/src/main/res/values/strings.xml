@@ -13,6 +13,7 @@
     <string name="action_cancel">Cancel</string>
     <string name="action_retake">Retake</string>
     <string name="action_confirm">Confirm</string>
+    <string name="action_share">Share</string>
     <string name="content_desc_back">Go back</string>
     <string name="scan_done">Done</string>
     <string name="error_invalid_image">Invalid image.</string>
