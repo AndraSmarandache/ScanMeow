@@ -1,6 +1,6 @@
 import os
 
-from PyQt5.QtCore import Qt, QRect, QUrl, pyqtSignal
+from PyQt5.QtCore import Qt, QRect, QUrl, QThread, pyqtSignal
 from PyQt5.QtGui import QDesktopServices
 from PyQt5.QtGui import QPixmap, QFont
 from PyQt5.QtWidgets import (
@@ -735,6 +735,10 @@ class MainWindow(QMainWindow):
         self._refresh_lists()
         self._stack.setCurrentIndex(0)
 
+        # ── desktop receiver (TCP test channel for mobile Share) ─────────
+        # Mobile sends: "SMK1" + uint16 nameLen + filename UTF-8 + uint64 fileSize + file bytes.
+        self._start_pdf_receiver()
+
     # ── slots ──────────────────────────────────────────────────────────────
 
     def _on_nav(self, idx: int) -> None:
@@ -774,3 +778,97 @@ class MainWindow(QMainWindow):
     def _refresh_lists(self) -> None:
         self._view_recent.set_documents(self._manager.get_recent())
         self._view_all.set_documents(self._manager.get_all())
+
+    def _start_pdf_receiver(self) -> None:
+        base_dir = os.path.join(os.path.expanduser("~"), "ScanMeow")
+        inbox_dir = os.path.join(base_dir, "inbox")
+        os.makedirs(inbox_dir, exist_ok=True)
+
+        self._pdf_receiver = PdfReceiver(
+            port=5566,
+            inbox_dir=inbox_dir,
+            parent=self,
+        )
+        self._pdf_receiver.pdf_received.connect(self._on_pdf_received)
+        self._pdf_receiver.start()
+
+    def _on_pdf_received(self, pdf_path: str) -> None:
+        try:
+            doc = self._manager.add_from_file(pdf_path)
+            # inbox is just a staging area; managed storage already has the file.
+            try:
+                os.remove(pdf_path)
+            except OSError:
+                pass
+            self._refresh_lists()
+            QMessageBox.information(
+                self,
+                "Document received",
+                f'"{doc.name}" was added successfully.',
+            )
+        except Exception as exc:
+            QMessageBox.critical(self, "Error", str(exc))
+
+
+class PdfReceiver(QThread):
+    pdf_received = pyqtSignal(str)
+
+    def __init__(self, *, port: int, inbox_dir: str, parent=None):
+        super().__init__(parent)
+        self._port = port
+        self._inbox_dir = inbox_dir
+
+    def run(self) -> None:
+        import socket
+
+        def recv_exact(conn: socket.socket, n: int) -> bytes:
+            data = b""
+            while len(data) < n:
+                chunk = conn.recv(n - len(data))
+                if not chunk:
+                    raise ConnectionError("unexpected EOF")
+                data += chunk
+            return data
+
+        srv = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        srv.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        srv.bind(("0.0.0.0", self._port))
+        srv.listen(5)
+
+        while True:
+            conn, _addr = srv.accept()
+            with conn:
+                magic = recv_exact(conn, 4)
+                if magic != b"SMK1":
+                    continue
+
+                name_len = int.from_bytes(recv_exact(conn, 2), "big", signed=False)
+                file_name = recv_exact(conn, name_len).decode("utf-8", errors="ignore")
+                file_size = int.from_bytes(recv_exact(conn, 8), "big", signed=False)
+
+                # Basic sanity guard (avoid OOM / disk fill on malformed clients).
+                max_size = 80 * 1024 * 1024  # 80MB
+                if file_size <= 0 or file_size > max_size:
+                    continue
+
+                if not file_name.lower().endswith(".pdf"):
+                    file_name = "scanmeow_received.pdf"
+
+                out_path = os.path.join(self._inbox_dir, file_name)
+                # Avoid overwriting.
+                if os.path.exists(out_path):
+                    base, ext = os.path.splitext(file_name)
+                    out_path = os.path.join(
+                        self._inbox_dir, f"{base}_{int(os.times().elapsed)}{ext}"
+                    )
+
+                remaining = file_size
+                with open(out_path, "wb") as f:
+                    while remaining > 0:
+                        chunk = conn.recv(min(32 * 1024, remaining))
+                        if not chunk:
+                            raise ConnectionError("unexpected EOF during file payload")
+                        f.write(chunk)
+                        remaining -= len(chunk)
+
+                self.pdf_received.emit(out_path)
