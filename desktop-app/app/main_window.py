@@ -1,6 +1,7 @@
 import os
 
-from PyQt5.QtCore import Qt, pyqtSignal
+from PyQt5.QtCore import Qt, QRect, QUrl, pyqtSignal
+from PyQt5.QtGui import QDesktopServices
 from PyQt5.QtGui import QPixmap, QFont
 from PyQt5.QtWidgets import (
     QFileDialog,
@@ -106,7 +107,32 @@ class Sidebar(QWidget):
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(0)
 
-        layout.addSpacing(10)
+        # ── logo ───────────────────────────────────────────────────────────
+        logo_lbl = QLabel()
+        logo_pix = QPixmap(os.path.join(_ASSETS_DIR, "logo.png"))
+        if not logo_pix.isNull():
+            # trim transparent margins from the source image
+            img = logo_pix.toImage()
+            img = img.convertToFormat(img.Format_ARGB32)
+            x1, y1, x2, y2 = img.width(), img.height(), 0, 0
+            for y in range(img.height()):
+                for x in range(img.width()):
+                    if (img.pixel(x, y) >> 24) & 0xFF > 0:
+                        x1 = min(x1, x)
+                        y1 = min(y1, y)
+                        x2 = max(x2, x)
+                        y2 = max(y2, y)
+            if x2 > x1 and y2 > y1:
+                logo_pix = QPixmap.fromImage(img.copy(QRect(x1, y1, x2 - x1 + 1, y2 - y1 + 1)))
+            logo_pix = logo_pix.scaledToWidth(210, Qt.SmoothTransformation)
+            logo_lbl.setPixmap(logo_pix)
+        logo_lbl.setAlignment(Qt.AlignCenter)
+        logo_lbl.setStyleSheet("background-color: transparent; padding: 8px 0px;")
+        logo_lbl.setCursor(Qt.PointingHandCursor)
+        logo_lbl.mousePressEvent = lambda e: QDesktopServices.openUrl(
+            QUrl("https://github.com/AndraSmarandache/ScanMeow")
+        )
+        layout.addWidget(logo_lbl)
 
         # ── nav buttons ────────────────────────────────────────────────────
         self._btn_recent = _NavButton("📄", "Recent documents")
@@ -174,8 +200,8 @@ class _DocumentRow(QWidget):
 
         # pdf icon
         icon = QLabel("📄")
-        icon.setStyleSheet("font-size: 24px;")
-        icon.setFixedWidth(30)
+        icon.setStyleSheet("font-size: 36px;")
+        icon.setFixedWidth(44)
         row.addWidget(icon)
 
         # name + date
