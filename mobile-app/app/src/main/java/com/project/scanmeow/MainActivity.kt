@@ -3,28 +3,46 @@ package com.project.scanmeow
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
 import android.graphics.Color as AndroidColor
+import android.app.Activity
 import android.os.Bundle
 import android.graphics.RectF
 import android.graphics.pdf.PdfDocument
 import android.widget.Toast
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
+import androidx.activity.result.contract.ActivityResultContracts
+import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.enableEdgeToEdge
 import androidx.annotation.DrawableRes
+import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.Spacer
 import androidx.compose.material3.Scaffold
+import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.Button
+import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.tooling.preview.Preview
+import androidx.compose.ui.unit.dp
+import com.google.android.gms.auth.api.signin.GoogleSignIn
+import com.google.android.gms.auth.api.signin.GoogleSignInOptions
+import com.google.android.gms.common.api.ApiException
+import com.google.firebase.auth.FirebaseAuth
+import com.google.firebase.auth.GoogleAuthProvider
 import com.project.scanmeow.ui.home.MainHomeScreen
 import com.project.scanmeow.ui.home.ScanAlignedReviewScreen
 import com.project.scanmeow.ui.home.ScanLoadingScreen
@@ -70,138 +88,240 @@ class MainActivity : ComponentActivity() {
                     .build()
             }
 
+            // ── Firebase Google Sign-In ────────────────────────────────────────
+            val firebaseAuth = remember { FirebaseAuth.getInstance() }
+            var firebaseUid by remember { mutableStateOf(firebaseAuth.currentUser?.uid) }
+            var firebaseIdToken by remember { mutableStateOf<String?>(null) }
+
+            val defaultWebClientId = remember {
+                val resId = context.resources.getIdentifier(
+                    "default_web_client_id",
+                    "string",
+                    context.packageName,
+                )
+                if (resId != 0) context.getString(resId) else ""
+            }
+
+            val signInClient = remember(defaultWebClientId) {
+                if (defaultWebClientId.isBlank()) {
+                    null
+                } else {
+                    val options = GoogleSignInOptions.Builder()
+                        .requestIdToken(defaultWebClientId)
+                        .requestEmail()
+                        .build()
+                    GoogleSignIn.getClient(context, options)
+                }
+            }
+
+            LaunchedEffect(firebaseUid) {
+                if (firebaseIdToken == null && firebaseAuth.currentUser != null) {
+                    firebaseAuth.currentUser
+                        ?.getIdToken(true)
+                        ?.addOnSuccessListener { result -> firebaseIdToken = result.token }
+                }
+            }
+
+            val signInLauncher = rememberLauncherForActivityResult(
+                contract = ActivityResultContracts.StartActivityForResult(),
+            ) { activityResult ->
+                if (activityResult.resultCode != Activity.RESULT_OK) return@rememberLauncherForActivityResult
+                val data = activityResult.data ?: return@rememberLauncherForActivityResult
+                val task = GoogleSignIn.getSignedInAccountFromIntent(data)
+                try {
+                    val account = task.getResult(ApiException::class.java)
+                    val googleIdToken = account.idToken
+                    if (googleIdToken.isNullOrBlank()) {
+                        Toast.makeText(context, "Missing Google idToken.", Toast.LENGTH_LONG).show()
+                        return@rememberLauncherForActivityResult
+                    }
+                    val credential = GoogleAuthProvider.getCredential(googleIdToken, null)
+                    firebaseAuth.signInWithCredential(credential)
+                        .addOnSuccessListener { authResult ->
+                            firebaseUid = authResult.user?.uid
+                            authResult.user
+                                ?.getIdToken(true)
+                                ?.addOnSuccessListener { result -> firebaseIdToken = result.token }
+                        }
+                        .addOnFailureListener { e ->
+                            Toast.makeText(context, "Firebase sign-in failed: ${e.message}", Toast.LENGTH_LONG).show()
+                        }
+                } catch (e: ApiException) {
+                    Toast.makeText(context, "Google sign-in failed: ${e.message}", Toast.LENGTH_LONG).show()
+                }
+            }
+
             ScanMeowTheme {
-                Scaffold(modifier = Modifier.fillMaxSize()) { innerPadding ->
-                    var screen by remember { mutableStateOf<AppScreen>(AppScreen.Home) }
-                    var sourceDrawableId by remember { mutableIntStateOf(0) }
-
-                    when (val s = screen) {
-                        AppScreen.Home -> MainHomeScreen(
-                            modifier = Modifier.padding(innerPadding),
-                            onScanDocumentClick = { drawableId ->
-                                if (drawableId == 0) {
-                                    Toast.makeText(
-                                        context,
-                                        context.getString(R.string.toast_missing_demo_document),
-                                        Toast.LENGTH_SHORT,
-                                    ).show()
-                                    return@MainHomeScreen
-                                }
-                                sourceDrawableId = drawableId
-                                screen = AppScreen.LoadingAligned
-                                scope.launch {
-                                    val result = runCatching {
-                                        val jpeg = drawableToJpegBytes(context.resources, drawableId)
-                                        http.postScanMultipart(
-                                            jpegBytes = jpeg,
-                                            binarize = false,
-                                            aiEnhance = false,
-                                            upright = true,
-                                        )
-                                    }
-                                    result.onSuccess { bytes ->
-                                        screen = AppScreen.AlignedReview(bytes)
-                                    }.onFailure { e ->
-                                        screen = AppScreen.Home
+                if (firebaseIdToken == null || firebaseUid == null) {
+                    // Sign-in gate: only allow scanning + sharing after auth.
+                    Box(
+                        modifier = Modifier.fillMaxSize(),
+                        contentAlignment = Alignment.Center,
+                    ) {
+                        Column(
+                            verticalArrangement = Arrangement.Center,
+                            horizontalAlignment = Alignment.CenterHorizontally,
+                            modifier = Modifier.padding(24.dp),
+                        ) {
+                            Text(text = "Sign in with Google to continue.", style = MaterialTheme.typography.bodyLarge)
+                            Spacer(Modifier.padding(top = 0.dp))
+                            Button(
+                                onClick = {
+                                    if (signInClient == null) {
                                         Toast.makeText(
                                             context,
-                                            context.getString(
-                                                R.string.toast_scan_failed,
-                                                e.message ?: "unknown",
-                                            ),
+                                            "Missing google-services.json (default_web_client_id not found).",
                                             Toast.LENGTH_LONG,
                                         ).show()
+                                        return@Button
                                     }
-                                }
-                            },
-                        )
+                                    val intent = signInClient.signInIntent
+                                    signInLauncher.launch(intent)
+                                },
+                                modifier = Modifier.padding(top = 16.dp),
+                            ) {
+                                Text("Continue")
+                            }
+                        }
+                    }
+                } else {
+                    Scaffold(modifier = Modifier.fillMaxSize()) { innerPadding ->
+                        var screen by remember { mutableStateOf<AppScreen>(AppScreen.Home) }
+                        var sourceDrawableId by remember { mutableIntStateOf(0) }
 
-                        AppScreen.LoadingAligned -> ScanLoadingScreen(
-                            message = stringResource(R.string.scan_loading_aligned),
-                            modifier = Modifier.padding(innerPadding),
-                        )
-
-                        AppScreen.LoadingFinal -> ScanLoadingScreen(
-                            message = stringResource(R.string.scan_loading_final),
-                            modifier = Modifier.padding(innerPadding),
-                        )
-
-                        is AppScreen.AlignedReview -> ScanAlignedReviewScreen(
-                            alignedJpeg = s.jpeg,
-                            onCancel = { screen = AppScreen.Home },
-                            onConfirm = {
-                                val alignedBytes = s.jpeg
-                                screen = AppScreen.LoadingFinal
-                                scope.launch {
-                                    val result = runCatching {
-                                        val jpeg = drawableToJpegBytes(context.resources, sourceDrawableId)
-                                        http.postScanMultipart(
-                                            jpegBytes = jpeg,
-                                            binarize = true,
-                                            aiEnhance = true,
-                                            upright = true,
-                                        )
-                                    }
-                                    result.onSuccess { bytes ->
-                                        screen = AppScreen.ScannedResult(bytes)
-                                    }.onFailure { e ->
-                                        screen = AppScreen.AlignedReview(alignedBytes)
+                        when (val s = screen) {
+                            AppScreen.Home -> MainHomeScreen(
+                                modifier = Modifier.padding(innerPadding),
+                                onScanDocumentClick = { drawableId ->
+                                    if (drawableId == 0) {
                                         Toast.makeText(
                                             context,
-                                            context.getString(
-                                                R.string.toast_finalize_failed,
-                                                e.message ?: "unknown",
-                                            ),
-                                            Toast.LENGTH_LONG,
+                                            context.getString(R.string.toast_missing_demo_document),
+                                            Toast.LENGTH_SHORT,
                                         ).show()
+                                        return@MainHomeScreen
                                     }
-                                }
-                            },
-                            modifier = Modifier.padding(innerPadding),
-                        )
+                                    sourceDrawableId = drawableId
+                                    screen = AppScreen.LoadingAligned
+                                    scope.launch {
+                                        val result = runCatching {
+                                            val jpeg = drawableToJpegBytes(context.resources, drawableId)
+                                            http.postScanMultipart(
+                                                jpegBytes = jpeg,
+                                                binarize = false,
+                                                aiEnhance = false,
+                                                upright = true,
+                                            )
+                                        }
+                                        result.onSuccess { bytes ->
+                                            screen = AppScreen.AlignedReview(bytes)
+                                        }.onFailure { e ->
+                                            screen = AppScreen.Home
+                                            Toast.makeText(
+                                                context,
+                                                context.getString(
+                                                    R.string.toast_scan_failed,
+                                                    e.message ?: "unknown",
+                                                ),
+                                                Toast.LENGTH_LONG,
+                                            ).show()
+                                        }
+                                    }
+                                },
+                            )
 
-                        is AppScreen.ScannedResult -> ScanResultScreen(
-                            scannedJpeg = s.jpeg,
-                            onCancel = { screen = AppScreen.Home },
-                            onShare = {
-                                // Convert to compressed single-page PDF, then send to desktop (TCP test channel).
-                                scope.launch {
-                                    Toast.makeText(
-                                        context,
-                                        "Preparing PDF & sending to desktop…",
-                                        Toast.LENGTH_SHORT,
-                                    ).show()
+                            AppScreen.LoadingAligned -> ScanLoadingScreen(
+                                message = stringResource(R.string.scan_loading_aligned),
+                                modifier = Modifier.padding(innerPadding),
+                            )
 
-                                    val fileName = "scanmeow_${System.currentTimeMillis()}.pdf"
-                                    val pdfBytes = runCatching {
-                                        createCompressedPdfFromJpeg(s.jpeg)
-                                    }.getOrElse { e ->
+                            AppScreen.LoadingFinal -> ScanLoadingScreen(
+                                message = stringResource(R.string.scan_loading_final),
+                                modifier = Modifier.padding(innerPadding),
+                            )
+
+                            is AppScreen.AlignedReview -> ScanAlignedReviewScreen(
+                                alignedJpeg = s.jpeg,
+                                onCancel = { screen = AppScreen.Home },
+                                onConfirm = {
+                                    val alignedBytes = s.jpeg
+                                    screen = AppScreen.LoadingFinal
+                                    scope.launch {
+                                        val result = runCatching {
+                                            val jpeg = drawableToJpegBytes(context.resources, sourceDrawableId)
+                                            http.postScanMultipart(
+                                                jpegBytes = jpeg,
+                                                binarize = true,
+                                                aiEnhance = true,
+                                                upright = true,
+                                            )
+                                        }
+                                        result.onSuccess { bytes ->
+                                            screen = AppScreen.ScannedResult(bytes)
+                                        }.onFailure { e ->
+                                            screen = AppScreen.AlignedReview(alignedBytes)
+                                            Toast.makeText(
+                                                context,
+                                                context.getString(
+                                                    R.string.toast_finalize_failed,
+                                                    e.message ?: "unknown",
+                                                ),
+                                                Toast.LENGTH_LONG,
+                                            ).show()
+                                        }
+                                    }
+                                },
+                                modifier = Modifier.padding(innerPadding),
+                            )
+
+                            is AppScreen.ScannedResult -> ScanResultScreen(
+                                scannedJpeg = s.jpeg,
+                                onCancel = { screen = AppScreen.Home },
+                                onShare = {
+                                    // Convert to compressed single-page PDF, then send to desktop with Firebase token.
+                                    val token = firebaseIdToken
+                                    if (token.isNullOrBlank()) {
+                                        Toast.makeText(context, "Missing Firebase token.", Toast.LENGTH_LONG).show()
+                                        return@ScanResultScreen
+                                    }
+                                    scope.launch {
                                         Toast.makeText(
                                             context,
-                                            "PDF creation failed: ${e.message ?: "unknown"}",
-                                            Toast.LENGTH_LONG,
+                                            "Preparing PDF & sending to desktop…",
+                                            Toast.LENGTH_SHORT,
                                         ).show()
-                                        return@launch
-                                    }
 
-                                    runCatching {
-                                        sendPdfToDesktop(pdfBytes, fileName)
-                                    }.onSuccess {
-                                        Toast.makeText(context, "Sent to desktop.", Toast.LENGTH_SHORT).show()
-                                        screen = AppScreen.Home
-                                    }.onFailure { e ->
-                                        Toast.makeText(
-                                            context,
-                                            "Send failed: ${e.message ?: "unknown"}",
-                                            Toast.LENGTH_LONG,
-                                        ).show()
+                                        val fileName = "scanmeow_${System.currentTimeMillis()}.pdf"
+                                        val pdfBytes = runCatching {
+                                            createCompressedPdfFromJpeg(s.jpeg)
+                                        }.getOrElse { e ->
+                                            Toast.makeText(
+                                                context,
+                                                "PDF creation failed: ${e.message ?: "unknown"}",
+                                                Toast.LENGTH_LONG,
+                                            ).show()
+                                            return@launch
+                                        }
+
+                                        runCatching {
+                                            sendPdfToDesktop(pdfBytes, fileName, token)
+                                        }.onSuccess {
+                                            Toast.makeText(context, "Sent to desktop.", Toast.LENGTH_SHORT).show()
+                                            screen = AppScreen.Home
+                                        }.onFailure { e ->
+                                            Toast.makeText(
+                                                context,
+                                                "Send failed: ${e.message ?: "unknown"}",
+                                                Toast.LENGTH_LONG,
+                                            ).show()
+                                        }
                                     }
-                                }
-                            },
-                            modifier = Modifier.padding(innerPadding),
-                            cancelLabel = stringResource(R.string.action_cancel),
-                            shareLabel = stringResource(R.string.action_share),
-                        )
+                                },
+                                modifier = Modifier.padding(innerPadding),
+                                cancelLabel = stringResource(R.string.action_cancel),
+                                shareLabel = stringResource(R.string.action_share),
+                            )
+                        }
                     }
                 }
             }
@@ -327,16 +447,21 @@ private fun aspectFitRect(srcW: Int, srcH: Int, dstW: Float, dstH: Float): RectF
     return RectF(left, top, left + drawW, top + drawH)
 }
 
-private suspend fun sendPdfToDesktop(pdfBytes: ByteArray, fileName: String) =
+private suspend fun sendPdfToDesktop(pdfBytes: ByteArray, fileName: String, firebaseIdToken: String) =
     withContext(Dispatchers.IO) {
         Socket(DESKTOP_TCP_HOST, DESKTOP_TCP_PORT).use { socket ->
             DataOutputStream(socket.getOutputStream()).use { dos ->
-                dos.writeBytes("SMK1") // magic (4 bytes)
+                dos.writeBytes("SMK2") // magic (4 bytes)
 
                 val nameBytes = fileName.toByteArray(Charsets.UTF_8)
                 require(nameBytes.size <= 65535) { "filename too long" }
                 dos.writeShort(nameBytes.size) // 2 bytes
                 dos.write(nameBytes) // filename
+
+                val tokenBytes = firebaseIdToken.toByteArray(Charsets.UTF_8)
+                require(tokenBytes.size <= 65535) { "idToken too long" }
+                dos.writeShort(tokenBytes.size) // 2 bytes
+                dos.write(tokenBytes)
 
                 dos.writeLong(pdfBytes.size.toLong()) // 8 bytes
 
