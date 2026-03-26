@@ -162,6 +162,7 @@ class _DocumentRow(QWidget):
         self.setAttribute(Qt.WA_StyledBackground, True)
         self.setStyleSheet("background-color: #ffffff;")
         self.setFixedHeight(62)
+        self.setMinimumWidth(460)
 
         root = QVBoxLayout(self)
         root.setContentsMargins(0, 0, 0, 0)
@@ -184,8 +185,11 @@ class _DocumentRow(QWidget):
         name_lbl.setStyleSheet(
             f"font-size: 14px; font-weight: 600; color: {_TEXT_PRIMARY};"
         )
+        name_lbl.setMinimumWidth(0)
+        name_lbl.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
         date_lbl = QLabel(doc.received_display)
         date_lbl.setStyleSheet(f"font-size: 12px; color: {_COL_HEADER};")
+        date_lbl.setMinimumWidth(0)
         meta.addWidget(name_lbl)
         meta.addWidget(date_lbl)
         row.addLayout(meta)
@@ -307,7 +311,7 @@ class DocumentListView(QWidget):
         self._scroll = QScrollArea()
         self._scroll.setWidgetResizable(True)
         self._scroll.setFrameShape(QFrame.NoFrame)
-        self._scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        self._scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAsNeeded)
         self._scroll.setStyleSheet("background-color: #ffffff;")
 
         self._list_widget = QWidget()

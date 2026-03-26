@@ -9,7 +9,7 @@ _BASE_DIR = os.path.join(os.path.expanduser("~"), "ScanMeow")
 DOCS_DIR = os.path.join(_BASE_DIR, "documents")
 DB_PATH = os.path.join(_BASE_DIR, "scanmeow.db")
 
-RECENT_LIMIT = 10
+RECENT_LIMIT = 5
 
 
 @dataclass
