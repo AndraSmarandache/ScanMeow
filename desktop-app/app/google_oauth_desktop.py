@@ -1,4 +1,5 @@
 import http.server
+import json
 import secrets
 import threading
 import time
@@ -25,7 +26,7 @@ class GoogleFirebaseSignInThread(QThread):
     """
 
     status = pyqtSignal(str)
-    success = pyqtSignal(str, str)  # firebase_id_token, uid
+    success = pyqtSignal(str, str, str, str)  # firebase_id_token, uid, display_name, picture_url
     failure = pyqtSignal(str)
 
     def __init__(self, *, config: OAuthConfig, parent=None):
@@ -34,12 +35,12 @@ class GoogleFirebaseSignInThread(QThread):
 
     def run(self) -> None:
         try:
-            firebase_id_token, uid = self._sign_in()
-            self.success.emit(firebase_id_token, uid)
+            firebase_id_token, uid, display_name, picture_url = self._sign_in()
+            self.success.emit(firebase_id_token, uid, display_name, picture_url)
         except Exception as e:
             self.failure.emit(str(e))
 
-    def _sign_in(self) -> Tuple[str, str]:
+    def _sign_in(self) -> Tuple[str, str, str, str]:
         redirect_uri = f"http://127.0.0.1:{self._cfg.redirect_port}/callback"
         state = secrets.token_urlsafe(24)
 
@@ -121,6 +122,7 @@ class GoogleFirebaseSignInThread(QThread):
         google_id_token = tokens.get("id_token")
         if not google_id_token:
             raise RuntimeError("Google token exchange did not return id_token.")
+        display_name, picture_url = self._extract_profile_from_jwt(google_id_token)
 
         # Exchange Google ID token -> Firebase session (idToken + localId).
         self.status.emit("Desktop: signing into Firebase…")
@@ -141,5 +143,27 @@ class GoogleFirebaseSignInThread(QThread):
         uid = fb.get("localId")
         if not firebase_id_token or not uid:
             raise RuntimeError("Firebase sign-in did not return idToken/localId.")
-        return firebase_id_token, uid
+        return firebase_id_token, uid, display_name, picture_url
+
+    @staticmethod
+    def _extract_profile_from_jwt(jwt_token: str) -> Tuple[str, str]:
+        """
+        Parse unsigned JWT payload for UI hints (name/picture)
+        This is used only for display, not authorization decisions
+        """
+        parts = jwt_token.split(".")
+        if len(parts) < 2:
+            return "", ""
+        payload_b64 = parts[1]
+        # base64url padding
+        payload_b64 += "=" * ((4 - len(payload_b64) % 4) % 4)
+        try:
+            import base64
+
+            payload = json.loads(base64.urlsafe_b64decode(payload_b64.encode("utf-8")).decode("utf-8"))
+            name = payload.get("name", "") or ""
+            picture = payload.get("picture", "") or ""
+            return name, picture
+        except Exception:
+            return "", ""
 

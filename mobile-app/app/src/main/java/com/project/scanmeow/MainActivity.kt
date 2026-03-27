@@ -17,13 +17,24 @@ import androidx.annotation.DrawableRes
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.Image
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Button
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
+import androidx.compose.material3.DropdownMenu
+import androidx.compose.material3.DropdownMenuItem
+import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
+import androidx.compose.material3.Surface
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.LaunchedEffect
@@ -37,12 +48,17 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.tooling.preview.Preview
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.unit.dp
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.ArrowBack
+import androidx.compose.ui.draw.clip
 import com.google.android.gms.auth.api.signin.GoogleSignIn
 import com.google.android.gms.auth.api.signin.GoogleSignInOptions
 import com.google.android.gms.common.api.ApiException
 import com.google.firebase.auth.FirebaseAuth
 import com.google.firebase.auth.GoogleAuthProvider
+import coil3.compose.AsyncImage
 import com.project.scanmeow.ui.home.MainHomeScreen
 import com.project.scanmeow.ui.home.ScanAlignedReviewScreen
 import com.project.scanmeow.ui.home.ScanLoadingScreen
@@ -78,7 +94,7 @@ class MainActivity : ComponentActivity() {
         setContent {
             val context = LocalContext.current
             val scope = rememberCoroutineScope()
-            // OpenCV pipeline can take tens of seconds; default OkHttp timeouts are too short.
+            // OpenCV pipeline can take tens of seconds; default OkHttp timeouts are too short
             val http = remember {
                 OkHttpClient.Builder()
                     .connectTimeout(120, TimeUnit.SECONDS)
@@ -92,6 +108,10 @@ class MainActivity : ComponentActivity() {
             val firebaseAuth = remember { FirebaseAuth.getInstance() }
             var firebaseUid by remember { mutableStateOf(firebaseAuth.currentUser?.uid) }
             var firebaseIdToken by remember { mutableStateOf<String?>(null) }
+            var firebaseEmail by remember { mutableStateOf(firebaseAuth.currentUser?.email) }
+            var firebaseDisplayName by remember { mutableStateOf(firebaseAuth.currentUser?.displayName) }
+            var firebasePhotoUrl by remember { mutableStateOf(firebaseAuth.currentUser?.photoUrl?.toString()) }
+            var avatarLoadFailed by remember { mutableStateOf(false) }
 
             val defaultWebClientId = remember {
                 val resId = context.resources.getIdentifier(
@@ -139,6 +159,10 @@ class MainActivity : ComponentActivity() {
                     firebaseAuth.signInWithCredential(credential)
                         .addOnSuccessListener { authResult ->
                             firebaseUid = authResult.user?.uid
+                            firebaseEmail = authResult.user?.email
+                            firebaseDisplayName = authResult.user?.displayName
+                            firebasePhotoUrl = authResult.user?.photoUrl?.toString()
+                            avatarLoadFailed = false
                             authResult.user
                                 ?.getIdToken(true)
                                 ?.addOnSuccessListener { result -> firebaseIdToken = result.token }
@@ -153,7 +177,7 @@ class MainActivity : ComponentActivity() {
 
             ScanMeowTheme {
                 if (firebaseIdToken == null || firebaseUid == null) {
-                    // Sign-in gate: only allow scanning + sharing after auth.
+                    // Sign-in gate shown only when no valid Firebase session
                     Box(
                         modifier = Modifier.fillMaxSize(),
                         contentAlignment = Alignment.Center,
@@ -163,7 +187,7 @@ class MainActivity : ComponentActivity() {
                             horizontalAlignment = Alignment.CenterHorizontally,
                             modifier = Modifier.padding(24.dp),
                         ) {
-                            Text(text = "Sign in with Google to continue.", style = MaterialTheme.typography.bodyLarge)
+                            Text(text = "Sign in with Google", style = MaterialTheme.typography.bodyLarge)
                             Spacer(Modifier.padding(top = 0.dp))
                             Button(
                                 onClick = {
@@ -180,15 +204,113 @@ class MainActivity : ComponentActivity() {
                                 },
                                 modifier = Modifier.padding(top = 16.dp),
                             ) {
-                                Text("Continue")
+                                Text("Sign in")
                             }
                         }
                     }
                 } else {
-                    Scaffold(modifier = Modifier.fillMaxSize()) { innerPadding ->
-                        var screen by remember { mutableStateOf<AppScreen>(AppScreen.Home) }
-                        var sourceDrawableId by remember { mutableIntStateOf(0) }
+                    var screen by remember { mutableStateOf<AppScreen>(AppScreen.Home) }
+                    var sourceDrawableId by remember { mutableIntStateOf(0) }
+                    var accountMenuExpanded by remember { mutableStateOf(false) }
 
+                    Scaffold(
+                        modifier = Modifier.fillMaxSize(),
+                        topBar = {
+                            Row(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .padding(horizontal = 8.dp)
+                                    .padding(top = 20.dp, bottom = 0.dp),
+                                horizontalArrangement = Arrangement.SpaceBetween,
+                                verticalAlignment = Alignment.CenterVertically,
+                            ) {
+                                if (screen is AppScreen.AlignedReview) {
+                                    IconButton(onClick = { screen = AppScreen.Home }) {
+                                        Icon(
+                                            imageVector = Icons.AutoMirrored.Filled.ArrowBack,
+                                            contentDescription = stringResource(R.string.content_desc_back),
+                                        )
+                                    }
+                                } else {
+                                    Spacer(Modifier.size(40.dp))
+                                }
+
+                                Box {
+                                    IconButton(
+                                        onClick = { accountMenuExpanded = true },
+                                        modifier = Modifier.padding(top = 8.dp),
+                                    ) {
+                                        val showFallback = firebasePhotoUrl.isNullOrBlank() || avatarLoadFailed
+                                        if (showFallback) {
+                                            val initial = (firebaseDisplayName ?: firebaseEmail ?: "")
+                                                .trim()
+                                                .firstOrNull()
+                                                ?.uppercaseChar()
+                                                ?.toString()
+                                                ?: "A"
+                                            Surface(
+                                                modifier = Modifier.size(30.dp),
+                                                shape = CircleShape,
+                                                color = MaterialTheme.colorScheme.primary,
+                                            ) {
+                                                Box(contentAlignment = Alignment.Center) {
+                                                    Text(
+                                                        text = initial,
+                                                        color = MaterialTheme.colorScheme.onPrimary,
+                                                        style = MaterialTheme.typography.labelMedium,
+                                                    )
+                                                }
+                                            }
+                                        } else {
+                                            AsyncImage(
+                                                model = firebasePhotoUrl,
+                                                contentDescription = "Account menu",
+                                                modifier = Modifier
+                                                    .size(30.dp)
+                                                    .clip(CircleShape),
+                                                onError = { avatarLoadFailed = true },
+                                            )
+                                        }
+                                    }
+                                    DropdownMenu(
+                                        expanded = accountMenuExpanded,
+                                        onDismissRequest = { accountMenuExpanded = false },
+                                    ) {
+                                        val displayName = firebaseDisplayName?.takeIf { it.isNotBlank() }
+                                        val email = firebaseEmail?.takeIf { it.isNotBlank() }
+                                        if (displayName != null) {
+                                            DropdownMenuItem(
+                                                text = { Text(displayName) },
+                                                onClick = {},
+                                                enabled = false,
+                                            )
+                                        }
+                                        if (email != null) {
+                                            DropdownMenuItem(
+                                                text = { Text(email) },
+                                                onClick = {},
+                                                enabled = false,
+                                            )
+                                        }
+                                        DropdownMenuItem(
+                                            text = { Text("Sign out", color = Color(0xFFD32F2F)) },
+                                            onClick = {
+                                                accountMenuExpanded = false
+                                                firebaseAuth.signOut()
+                                                signInClient?.signOut()
+                                                firebaseUid = null
+                                                firebaseEmail = null
+                                                firebaseDisplayName = null
+                                                firebasePhotoUrl = null
+                                                avatarLoadFailed = false
+                                                firebaseIdToken = null
+                                            },
+                                        )
+                                    }
+                                }
+                            }
+                        },
+                    ) { innerPadding ->
                         when (val s = screen) {
                             AppScreen.Home -> MainHomeScreen(
                                 modifier = Modifier.padding(innerPadding),
@@ -278,7 +400,7 @@ class MainActivity : ComponentActivity() {
                                 scannedJpeg = s.jpeg,
                                 onCancel = { screen = AppScreen.Home },
                                 onShare = {
-                                    // Convert to compressed single-page PDF, then send to desktop with Firebase token.
+                                    // Convert to compressed single-page PDF, then send to desktop with Firebase token
                                     val token = firebaseIdToken
                                     if (token.isNullOrBlank()) {
                                         Toast.makeText(context, "Missing Firebase token.", Toast.LENGTH_LONG).show()
@@ -378,7 +500,7 @@ private suspend fun OkHttpClient.postScanMultipart(
 private fun createCompressedPdfFromJpeg(jpegBytes: ByteArray): ByteArray {
     val decoded = decodeJpegForPdf(jpegBytes) ?: error("decode jpeg failed")
 
-    // Downscale for smaller PDF size.
+    // Downscale for smaller PDF size
     val maxDim = max(decoded.width, decoded.height).toFloat()
     val scale = min(1f, PDF_MAX_DIM_PX.toFloat() / maxDim)
     val scaled = if (scale < 1f) {
@@ -387,7 +509,7 @@ private fun createCompressedPdfFromJpeg(jpegBytes: ByteArray): ByteArray {
         Bitmap.createScaledBitmap(decoded, w, h, true)
     } else decoded
 
-    // Extra “compression” step: JPEG re-encode then decode to reduce what the PDF embeds.
+    // Extra “compression” step: JPEG re-encode then decode to reduce what the PDF embeds
     val compressedJpeg = ByteArrayOutputStream().use { baos ->
         scaled.compress(android.graphics.Bitmap.CompressFormat.JPEG, PDF_JPEG_QUALITY, baos)
         baos.toByteArray()
@@ -396,7 +518,7 @@ private fun createCompressedPdfFromJpeg(jpegBytes: ByteArray): ByteArray {
 
     val pdfDoc = PdfDocument()
     try {
-        // A4 in points at 72dpi.
+        // A4 in points at 72dpi
         val pageW = 595
         val pageH = 842
         val pageInfo = PdfDocument.PageInfo.Builder(pageW, pageH, 1).create()

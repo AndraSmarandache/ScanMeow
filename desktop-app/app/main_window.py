@@ -2,21 +2,25 @@ import os
 
 from PyQt5.QtCore import Qt, QRect, QUrl, QThread, pyqtSignal
 from PyQt5.QtGui import QDesktopServices
-from PyQt5.QtGui import QPixmap, QFont
+from PyQt5.QtGui import QPixmap, QFont, QIcon, QCloseEvent, QPainter, QPainterPath
 from PyQt5.QtWidgets import (
     QFileDialog,
     QFrame,
     QHBoxLayout,
     QLabel,
     QMainWindow,
+    QMenu,
     QMessageBox,
     QPushButton,
     QScrollArea,
     QSizePolicy,
     QStackedWidget,
+    QToolButton,
     QVBoxLayout,
+    QWidgetAction,
     QWidget,
 )
+import requests
 
 from .document_manager import Document, DocumentManager
 from .firebase_upload import FirebaseAdminUploader
@@ -98,6 +102,7 @@ class _NavButton(QPushButton):
 
 class Sidebar(QWidget):
     page_changed = pyqtSignal(int)  # 0 = recent, 1 = all
+    sign_in_requested = pyqtSignal()
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -109,6 +114,59 @@ class Sidebar(QWidget):
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(0)
+
+        self._auth_signed_in = False
+        self._profile_name = ""
+        self._profile_picture_url = ""
+
+        auth_w = QWidget()
+        auth_l = QHBoxLayout(auth_w)
+        auth_l.setContentsMargins(0, 30, 0, 0)
+        auth_l.setSpacing(6)
+        auth_l.addStretch()
+
+        self._sign_in_btn = QPushButton("Sign in")
+        self._sign_in_btn.setFixedHeight(32)
+        self._sign_in_btn.setStyleSheet("""
+            QPushButton {
+                background-color: #111111;
+                color: #ffffff;
+                border: none;
+                border-radius: 4px;
+                font-size: 12px;
+                font-weight: 600;
+                padding: 0 14px;
+            }
+            QPushButton:hover   { background-color: #222222; }
+            QPushButton:pressed { background-color: #000000; }
+        """)
+        self._sign_in_btn.setCursor(Qt.PointingHandCursor)
+        self._sign_in_btn.clicked.connect(self.sign_in_requested)
+        auth_l.addWidget(self._sign_in_btn)
+
+        self._profile_btn = QToolButton()
+        self._profile_btn.setText("👤")
+        self._profile_btn.setFixedSize(34, 34)
+        self._profile_btn.setStyleSheet("""
+            QToolButton {
+                background-color: #111111;
+                color: #ffffff;
+                border: none;
+                border-radius: 17px;
+                font-size: 16px;
+                font-weight: 600;
+                padding: 0;
+            }
+            QToolButton:hover   { background-color: #222222; }
+            QToolButton:pressed { background-color: #000000; }
+        """)
+        self._profile_btn.setCursor(Qt.PointingHandCursor)
+        self._profile_btn.clicked.connect(self._open_profile_menu)
+        self._profile_btn.setVisible(False)
+        auth_l.addWidget(self._profile_btn)
+        auth_l.addStretch()
+        auth_w.setVisible(False)
+        layout.addWidget(auth_w)
 
         # ── logo ───────────────────────────────────────────────────────────
         logo_lbl = QLabel()
@@ -130,7 +188,7 @@ class Sidebar(QWidget):
             logo_pix = logo_pix.scaledToWidth(210, Qt.SmoothTransformation)
             logo_lbl.setPixmap(logo_pix)
         logo_lbl.setAlignment(Qt.AlignCenter)
-        logo_lbl.setStyleSheet("background-color: transparent; padding: 8px 0px;")
+        logo_lbl.setStyleSheet("background-color: transparent; margin-top: -8px; padding: 0px;")
         logo_lbl.setCursor(Qt.PointingHandCursor)
         logo_lbl.mousePressEvent = lambda e: QDesktopServices.openUrl(
             QUrl("https://github.com/AndraSmarandache/ScanMeow")
@@ -168,6 +226,93 @@ class Sidebar(QWidget):
         layout.addWidget(bt_w)
 
         self._activate(0)
+
+    def set_auth_state(self, signed_in: bool, label: str = "", picture_url: str = "") -> None:
+        self._auth_signed_in = signed_in
+        self._profile_name = label or ""
+        self._profile_picture_url = picture_url or ""
+        self._sign_in_btn.setVisible(not signed_in)
+        self._profile_btn.setVisible(signed_in)
+        self._profile_btn.setText("👤")
+        self._profile_btn.setIcon(QIcon())
+        if signed_in:
+            self._apply_profile_icon()
+
+    def _apply_profile_icon(self) -> None:
+        if not self._profile_picture_url:
+            return
+        try:
+            resp = requests.get(self._profile_picture_url, timeout=12)
+            resp.raise_for_status()
+            pix = QPixmap()
+            if pix.loadFromData(resp.content):
+                size = min(self._profile_btn.width(), self._profile_btn.height()) - 4
+                rounded = QPixmap(size, size)
+                rounded.fill(Qt.transparent)
+                painter = QPainter(rounded)
+                painter.setRenderHint(QPainter.Antialiasing, True)
+                path = QPainterPath()
+                path.addEllipse(0, 0, size, size)
+                painter.setClipPath(path)
+                src = pix.scaled(size, size, Qt.KeepAspectRatioByExpanding, Qt.SmoothTransformation)
+                painter.drawPixmap(0, 0, src)
+                painter.end()
+
+                self._profile_btn.setIcon(QIcon(rounded))
+                self._profile_btn.setIconSize(rounded.size())
+                self._profile_btn.setText("")
+        except Exception:
+            pass
+
+    def _open_profile_menu(self) -> None:
+        menu = QMenu(self)
+        menu.setStyleSheet("""
+            QMenu {
+                background-color: #ffffff;
+                border: 1px solid #d0d0d0;
+                padding: 4px;
+            }
+            QMenu::item {
+                padding: 4px 10px;
+                color: #202124;
+            }
+            QMenu::item:selected {
+                background-color: #f2f4f7;
+                color: #202124;
+            }
+        """)
+        if self._profile_name:
+            info = menu.addAction(self._profile_name)
+            info.setEnabled(False)
+        if self._auth_signed_in:
+            sign_out_btn = QPushButton("Sign out")
+            sign_out_btn.setFlat(True)
+            sign_out_btn.setCursor(Qt.PointingHandCursor)
+            sign_out_btn.setStyleSheet("""
+                QPushButton {
+                    color: #c62828;
+                    background-color: transparent;
+                    border: none;
+                    text-align: left;
+                    padding: 4px 10px;
+                    min-width: 120px;
+                }
+                QPushButton:hover {
+                    background-color: #c62828;
+                    color: #ffffff;
+                }
+            """)
+            sign_out_btn.clicked.connect(lambda: (menu.close(), self.sign_in_requested.emit()))
+            sign_out_action = QWidgetAction(menu)
+            sign_out_action.setDefaultWidget(sign_out_btn)
+            menu.addAction(sign_out_action)
+        else:
+            auth_action = menu.addAction("Sign in")
+            chosen = menu.exec_(self._profile_btn.mapToGlobal(self._profile_btn.rect().bottomLeft()))
+            if chosen == auth_action:
+                self.sign_in_requested.emit()
+            return
+        menu.exec_(self._profile_btn.mapToGlobal(self._profile_btn.rect().bottomLeft()))
 
     def _activate(self, idx: int) -> None:
         self._btn_recent.set_active(idx == 0)
@@ -290,9 +435,14 @@ class DocumentListView(QWidget):
         tbl.addWidget(title_lbl)
         tbl.addStretch()
 
-        sign_in_btn = QPushButton("Sign in")
-        sign_in_btn.setFixedHeight(34)
-        sign_in_btn.setStyleSheet(f"""
+        self._auth_signed_in = False
+        self._auth_label = "Not signed in"
+        self._profile_name = ""
+        self._profile_picture_url = ""
+
+        self._sign_in_btn = QPushButton("Sign in")
+        self._sign_in_btn.setFixedHeight(34)
+        self._sign_in_btn.setStyleSheet(f"""
             QPushButton {{
                 background-color: #111111;
                 color: #ffffff;
@@ -305,9 +455,30 @@ class DocumentListView(QWidget):
             QPushButton:hover   {{ background-color: #222222; }}
             QPushButton:pressed {{ background-color: #000000; }}
         """)
-        sign_in_btn.setCursor(Qt.PointingHandCursor)
-        sign_in_btn.clicked.connect(self.sign_in_requested)
-        tbl.addWidget(sign_in_btn)
+        self._sign_in_btn.setCursor(Qt.PointingHandCursor)
+        self._sign_in_btn.clicked.connect(self.sign_in_requested)
+        tbl.addWidget(self._sign_in_btn)
+        tbl.addSpacing(10)
+
+        self._profile_btn = QToolButton()
+        self._profile_btn.setText("👤")
+        self._profile_btn.setFixedSize(34, 34)
+        self._profile_btn.setStyleSheet(f"""
+            QToolButton {{
+                background-color: #111111;
+                color: #ffffff;
+                border: none;
+                border-radius: 17px;
+                font-size: 16px;
+                font-weight: 600;
+                padding: 0;
+            }}
+            QToolButton:hover   {{ background-color: #222222; }}
+            QToolButton:pressed {{ background-color: #000000; }}
+        """)
+        self._profile_btn.setCursor(Qt.PointingHandCursor)
+        self._profile_btn.clicked.connect(self._open_profile_menu)
+        tbl.addWidget(self._profile_btn)
         tbl.addSpacing(10)
 
         sim_btn = QPushButton("+ Simulate Receive")
@@ -373,6 +544,94 @@ class DocumentListView(QWidget):
 
         self._scroll.setWidget(self._list_widget)
         layout.addWidget(self._scroll)
+
+    def set_auth_state(self, signed_in: bool, label: str = "", picture_url: str = "") -> None:
+        self._auth_signed_in = signed_in
+        self._auth_label = label if (signed_in and label) else ("Signed in" if signed_in else "Not signed in")
+        self._profile_name = label or ""
+        self._profile_picture_url = picture_url or ""
+        self._sign_in_btn.setVisible(not signed_in)
+        self._profile_btn.setVisible(signed_in)
+        self._profile_btn.setText("👤")
+        self._profile_btn.setIcon(QIcon())
+        if signed_in:
+            self._apply_profile_icon()
+
+    def _apply_profile_icon(self) -> None:
+        if not self._profile_picture_url:
+            return
+        try:
+            resp = requests.get(self._profile_picture_url, timeout=12)
+            resp.raise_for_status()
+            pix = QPixmap()
+            if pix.loadFromData(resp.content):
+                size = min(self._profile_btn.width(), self._profile_btn.height()) - 4
+                rounded = QPixmap(size, size)
+                rounded.fill(Qt.transparent)
+                painter = QPainter(rounded)
+                painter.setRenderHint(QPainter.Antialiasing, True)
+                path = QPainterPath()
+                path.addEllipse(0, 0, size, size)
+                painter.setClipPath(path)
+                src = pix.scaled(size, size, Qt.KeepAspectRatioByExpanding, Qt.SmoothTransformation)
+                painter.drawPixmap(0, 0, src)
+                painter.end()
+
+                self._profile_btn.setIcon(QIcon(rounded))
+                self._profile_btn.setIconSize(rounded.size())
+                self._profile_btn.setText("")
+        except Exception:
+            pass
+
+    def _open_profile_menu(self) -> None:
+        menu = QMenu(self)
+        menu.setStyleSheet("""
+            QMenu {
+                background-color: #ffffff;
+                border: 1px solid #d0d0d0;
+                padding: 4px;
+            }
+            QMenu::item {
+                padding: 4px 10px;
+                color: #202124;
+            }
+            QMenu::item:selected {
+                background-color: #f2f4f7;
+                color: #202124;
+            }
+        """)
+        info = menu.addAction(self._profile_name or self._auth_label)
+        info.setEnabled(False)
+        if self._auth_signed_in:
+            sign_out_btn = QPushButton("Sign out")
+            sign_out_btn.setFlat(True)
+            sign_out_btn.setCursor(Qt.PointingHandCursor)
+            sign_out_btn.setStyleSheet("""
+                QPushButton {
+                    color: #c62828;
+                    background-color: transparent;
+                    border: none;
+                    text-align: left;
+                    padding: 4px 10px;
+                    min-width: 120px;
+                }
+                QPushButton:hover {
+                    background-color: #c62828;
+                    color: #ffffff;
+                }
+            """)
+            sign_out_btn.clicked.connect(lambda: (menu.close(), self.sign_in_requested.emit()))
+            sign_out_action = QWidgetAction(menu)
+            sign_out_action.setDefaultWidget(sign_out_btn)
+            menu.addAction(sign_out_action)
+        else:
+            auth_action = menu.addAction("Sign in")
+            chosen = menu.exec_(self._profile_btn.mapToGlobal(self._profile_btn.rect().bottomLeft()))
+            if chosen == auth_action:
+                self.sign_in_requested.emit()
+            return
+
+        menu.exec_(self._profile_btn.mapToGlobal(self._profile_btn.rect().bottomLeft()))
 
     def set_documents(self, docs: list) -> None:
         # clear existing rows (keep the trailing stretch)
@@ -762,7 +1021,7 @@ class MainWindow(QMainWindow):
         self._stack.setCurrentIndex(0)
 
         # ── desktop receiver (TCP test channel for mobile Share) ─────────
-        # Mobile sends: "SMK1" + uint16 nameLen + filename UTF-8 + uint64 fileSize + file bytes.
+        # Mobile sends: "SMK1" + uint16 nameLen + filename UTF-8 + uint64 fileSize + file bytes
         self._start_pdf_receiver()
 
     # ── slots ──────────────────────────────────────────────────────────────
@@ -820,15 +1079,34 @@ class MainWindow(QMainWindow):
 
         self._firebase_user_sync = None
         self._google_sign_in = None
+        self._signed_in_uid = None
+        self._set_auth_state(False, "")
+
+    def _set_auth_state(self, signed_in: bool, label: str, picture_url: str = "") -> None:
+        self._view_recent.set_auth_state(signed_in, label, picture_url)
+        self._view_all.set_auth_state(signed_in, label, picture_url)
 
     def _on_firebase_status(self, msg: str) -> None:
         try:
             self.statusBar().showMessage(msg, 10000)
         except Exception:
-            # If statusBar isn't ready for some reason, ignore.
+            # If statusBar isn't ready for some reason, ignore
             pass
 
     def _sign_in_google(self) -> None:
+        if self._signed_in_uid:
+            # Sign out UX toggle
+            if self._firebase_user_sync is not None:
+                try:
+                    self._firebase_user_sync.terminate()
+                except Exception:
+                    pass
+                self._firebase_user_sync = None
+            self._signed_in_uid = None
+            self._set_auth_state(False, "")
+            self._on_firebase_status("Signed out.")
+            return
+
         api_key = os.environ.get("FIREBASE_API_KEY", "").strip()
         project_id = os.environ.get("FIREBASE_PROJECT_ID", "").strip()
         storage_bucket = os.environ.get("FIREBASE_STORAGE_BUCKET", "").strip()
@@ -857,12 +1135,14 @@ class MainWindow(QMainWindow):
         self._google_sign_in = GoogleFirebaseSignInThread(config=cfg, parent=self)
         self._google_sign_in.status.connect(self._on_firebase_status)
         self._google_sign_in.success.connect(
-            lambda token, uid: self._start_firebase_user_sync(
+            lambda token, uid, display_name, picture_url: self._start_firebase_user_sync(
                 api_key=api_key,
                 project_id=project_id,
                 storage_bucket=storage_bucket,
                 id_token=token,
                 uid=uid,
+                display_name=display_name,
+                picture_url=picture_url,
             )
         )
         self._google_sign_in.failure.connect(lambda err: QMessageBox.critical(self, "Sign-in failed", err))
@@ -876,6 +1156,8 @@ class MainWindow(QMainWindow):
         storage_bucket: str,
         id_token: str,
         uid: str,
+        display_name: str,
+        picture_url: str,
     ) -> None:
         base_dir = os.path.join(os.path.expanduser("~"), "ScanMeow")
         inbox_dir = os.path.join(base_dir, "firebase_inbox")
@@ -900,12 +1182,26 @@ class MainWindow(QMainWindow):
         self._firebase_user_sync.status.connect(self._on_firebase_status)
         self._firebase_user_sync.pdf_received.connect(self._on_pdf_received)
         self._firebase_user_sync.start()
+        self._signed_in_uid = uid
+        self._set_auth_state(True, display_name or uid, picture_url)
         QMessageBox.information(self, "Signed in", "Desktop is now synced to your Firebase documents.")
+
+    def closeEvent(self, event: QCloseEvent) -> None:
+        # Stop background threads to avoid "QThread: Destroyed while thread is still running"
+        for th_attr in ("_firebase_user_sync", "_google_sign_in", "_pdf_receiver"):
+            th = getattr(self, th_attr, None)
+            if th is not None and th.isRunning():
+                try:
+                    th.terminate()
+                    th.wait(1200)
+                except Exception:
+                    pass
+        super().closeEvent(event)
 
     def _on_pdf_received(self, pdf_path: str) -> None:
         try:
             doc = self._manager.add_from_file(pdf_path)
-            # inbox is just a staging area; managed storage already has the file.
+            # inbox is just a staging area; managed storage already has the file
             try:
                 os.remove(pdf_path)
             except OSError:
@@ -971,7 +1267,7 @@ class PdfReceiver(QThread):
 
                 file_size = int.from_bytes(recv_exact(conn, 8), "big", signed=False)
 
-                # Basic sanity guard (avoid OOM / disk fill on malformed clients).
+                # Basic sanity guard (avoid OOM / disk fill on malformed clients)
                 max_size = 80 * 1024 * 1024  # 80MB
                 if file_size <= 0 or file_size > max_size:
                     continue
@@ -980,7 +1276,7 @@ class PdfReceiver(QThread):
                     file_name = "scanmeow_received.pdf"
 
                 out_path = os.path.join(self._inbox_dir, file_name)
-                # Avoid overwriting.
+                # Avoid overwriting
                 if os.path.exists(out_path):
                     base, ext = os.path.splitext(file_name)
                     out_path = os.path.join(
@@ -996,7 +1292,7 @@ class PdfReceiver(QThread):
                         f.write(chunk)
                         remaining -= len(chunk)
 
-                # Optional: upload to Firebase (ownership per user) if we have a valid ID token.
+                # Optional: upload to Firebase (ownership per user) if we have a valid ID token
                 if firebase_id_token and self._uploader is not None:
                     try:
                         with open(out_path, "rb") as f:
@@ -1007,7 +1303,7 @@ class PdfReceiver(QThread):
                             original_file_name=file_name,
                         )
                     except Exception:
-                        # If Firebase is not configured correctly, we still keep the local file.
+                        # If Firebase is not configured correctly, we still keep the local file
                         pass
 
                 self.pdf_received.emit(out_path)
