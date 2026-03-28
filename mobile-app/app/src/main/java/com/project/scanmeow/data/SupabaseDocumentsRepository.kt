@@ -22,8 +22,8 @@ class ListenerRegistration(private val cancel: () -> Unit) {
 }
 
 /**
- * Supabase REST (PostgREST + Storage) using the logged-in user's JWT.
- * Configure [BuildConfig] from mobile-app/local.properties (not committed).
+ * Supabase REST (PostgREST + Storage) client using the logged-in user's JWT.
+ * [BuildConfig] values are supplied from local.properties (not committed to the repo)
  */
 class SupabaseDocumentsRepository(
     private val http: OkHttpClient,
@@ -76,7 +76,7 @@ class SupabaseDocumentsRepository(
         val job = scope.launch(Dispatchers.IO) {
             while (isActive) {
                 runCatching { onChange(fetchDocumentsFromServer(userId)) }
-                delay(15_000L)
+                delay(8_000L)
             }
         }
         return ListenerRegistration { job.cancel() }

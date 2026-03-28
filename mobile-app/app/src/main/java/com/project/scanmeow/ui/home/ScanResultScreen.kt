@@ -40,6 +40,7 @@ fun ScanResultScreen(
     modifier: Modifier = Modifier,
     cancelLabel: String = "Cancel",
     saveLabel: String = "Save",
+    saveInProgress: Boolean = false,
 ) {
     val bitmap = remember(scannedJpeg) {
         BitmapFactory.decodeByteArray(scannedJpeg, 0, scannedJpeg.size)
@@ -102,6 +103,7 @@ fun ScanResultScreen(
             }
             Button(
                 onClick = onSave,
+                enabled = !saveInProgress,
                 modifier = Modifier.weight(1f),
                 colors = ButtonDefaults.buttonColors(
                     containerColor = ScanBlue,

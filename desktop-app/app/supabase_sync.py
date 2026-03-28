@@ -73,6 +73,17 @@ class SupabaseUserSyncThread(QThread):
                     with open(out_path, "wb") as f:
                         f.write(pdf_bytes)
 
+                    # Main-thread bootstrap may already have inserted this cloud row during download
+                    if self._document_manager is not None and self._document_manager.has_cloud_doc(
+                        d.doc_id
+                    ):
+                        self._received_doc_ids.add(d.doc_id)
+                        try:
+                            os.remove(out_path)
+                        except OSError:
+                            pass
+                        continue
+
                     self._received_doc_ids.add(d.doc_id)
                     self.status.emit(f"Supabase: received {safe_name}")
                     self.pdf_received.emit(out_path, d.doc_id, d.storage_path, d.file_name)

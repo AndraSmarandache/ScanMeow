@@ -7,6 +7,7 @@ import androidx.compose.foundation.border
 import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
@@ -30,6 +31,7 @@ import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.Description
 import androidx.compose.material.icons.filled.ExpandMore
 import androidx.compose.material.icons.filled.Image
+import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Share
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
@@ -67,6 +69,7 @@ import com.project.scanmeow.ui.theme.ScanBlue
 import com.project.scanmeow.ui.theme.ScanMeowTheme
 import java.util.Locale
 import java.util.concurrent.TimeUnit
+import kotlin.math.roundToInt
 import kotlinx.coroutines.launch
 
 @OptIn(ExperimentalFoundationApi::class)
@@ -202,6 +205,7 @@ fun MainHomeScreen(
     onDocumentClick: (UserCloudDocument) -> Unit = {},
     onShareCloudDocuments: suspend (List<UserCloudDocument>) -> Unit = {},
     onDeleteCloudDocuments: suspend (List<UserCloudDocument>) -> Unit = {},
+    onRefreshCloudDocuments: () -> Unit = {},
 ) {
     val context = LocalContext.current
     val demoDrawableId = rememberWithDrawables(context)
@@ -217,7 +221,6 @@ fun MainHomeScreen(
         cloudDocuments.sortedForHome(cloudDocSort)
     }
 
-    val recentLimit = 5
     val exitSelection = {
         docSelectionMode = false
         selectedDocIds = emptySet()
@@ -268,7 +271,7 @@ fun MainHomeScreen(
             .fillMaxSize()
             .padding(horizontal = 16.dp),
     ) {
-        // Pinned header: logo and scan action do not scroll with the document list.
+        // Pinned header: logo and scan stay fixed while the document list scrolls
         ComposeImage(
             painter = painterResource(R.drawable.app_logo),
             contentDescription = stringResource(R.string.content_desc_logo),
@@ -317,176 +320,211 @@ fun MainHomeScreen(
 
         Spacer(Modifier.height(20.dp))
 
-        // Section title row stays pinned; only the document list scrolls below.
-        Row(
-            modifier = Modifier.fillMaxWidth(),
-            horizontalArrangement = Arrangement.SpaceBetween,
-            verticalAlignment = Alignment.CenterVertically,
-        ) {
-            Row(
-                verticalAlignment = Alignment.CenterVertically,
-                modifier = Modifier.weight(1f),
-            ) {
-                Text(
-                    text = stringResource(R.string.recent_documents),
-                    style = MaterialTheme.typography.titleMedium,
-                )
-                Box {
-                    IconButton(onClick = { sortMenuExpanded = true }) {
-                        Icon(
-                            imageVector = Icons.Filled.ExpandMore,
-                            contentDescription = stringResource(R.string.sort_documents),
-                            tint = MaterialTheme.colorScheme.onSurface,
-                        )
-                    }
-                    DropdownMenu(
-                        expanded = sortMenuExpanded,
-                        onDismissRequest = { sortMenuExpanded = false },
-                    ) {
-                        DropdownMenuItem(
-                            text = { Text(stringResource(R.string.sort_name_az)) },
-                            onClick = {
-                                cloudDocSort = CloudDocSort.NAME_ASC
-                                sortMenuExpanded = false
-                            },
-                        )
-                        DropdownMenuItem(
-                            text = { Text(stringResource(R.string.sort_name_za)) },
-                            onClick = {
-                                cloudDocSort = CloudDocSort.NAME_DESC
-                                sortMenuExpanded = false
-                            },
-                        )
-                        DropdownMenuItem(
-                            text = { Text(stringResource(R.string.sort_date_newest)) },
-                            onClick = {
-                                cloudDocSort = CloudDocSort.DATE_NEWEST
-                                sortMenuExpanded = false
-                            },
-                        )
-                        DropdownMenuItem(
-                            text = { Text(stringResource(R.string.sort_date_oldest)) },
-                            onClick = {
-                                cloudDocSort = CloudDocSort.DATE_OLDEST
-                                sortMenuExpanded = false
-                            },
-                        )
-                    }
-                }
-            }
-            Row(
-                verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.End,
-                modifier = Modifier.wrapContentWidth(),
-            ) {
-                if (docSelectionMode) {
-                    TextButton(onClick = exitSelection) {
-                        Text(stringResource(R.string.selection_done))
-                    }
-                    IconButton(
-                        onClick = {
-                            val docs = sortedCloudDocuments.filter { it.docId in selectedDocIds }
-                            if (docs.isNotEmpty()) {
-                                scope.launch {
-                                    runCatching { onShareCloudDocuments(docs) }.onFailure { e ->
-                                        android.widget.Toast.makeText(
-                                            context,
-                                            e.message ?: "Share failed",
-                                            android.widget.Toast.LENGTH_LONG,
-                                        ).show()
-                                    }
-                                }
-                            }
-                        },
-                        enabled = selectedDocIds.isNotEmpty(),
-                    ) {
-                        Icon(
-                            imageVector = Icons.Filled.Share,
-                            contentDescription = stringResource(R.string.content_desc_selection_share),
-                            tint = if (selectedDocIds.isNotEmpty()) {
-                                MaterialTheme.colorScheme.primary
-                            } else {
-                                MaterialTheme.colorScheme.outline
-                            },
-                        )
-                    }
-                    IconButton(
-                        onClick = {
-                            val docs = sortedCloudDocuments.filter { it.docId in selectedDocIds }
-                            if (docs.isNotEmpty()) pendingDelete = docs
-                        },
-                        enabled = selectedDocIds.isNotEmpty(),
-                    ) {
-                        Icon(
-                            imageVector = Icons.Filled.Delete,
-                            contentDescription = stringResource(R.string.content_desc_selection_delete),
-                            tint = if (selectedDocIds.isNotEmpty()) {
-                                Color(0xFFC62828)
-                            } else {
-                                MaterialTheme.colorScheme.outline
-                            },
-                        )
-                    }
-                        } else if (sortedCloudDocuments.size > recentLimit) {
-                    TextButton(onClick = onToggleRecentDocumentsExpanded) {
-                        Text(
-                            text = if (recentDocumentsExpanded) {
-                                stringResource(R.string.show_less)
-                            } else {
-                                stringResource(R.string.see_all)
-                            },
-                        )
-                    }
-                }
-            }
-        }
-
-        Spacer(Modifier.height(8.dp))
-
-        val recent = if (recentDocumentsExpanded) {
-            sortedCloudDocuments
-        } else {
-            sortedCloudDocuments.take(recentLimit)
-        }
-
-        Column(
+        // Collapsed row count follows list height; at least three rows before "See all"
+        BoxWithConstraints(
             modifier = Modifier
                 .weight(1f)
-                .fillMaxWidth()
-                .verticalScroll(docListScroll),
+                .fillMaxWidth(),
         ) {
-            if (recent.isEmpty()) {
-                Text(
-                    text = stringResource(R.string.documents_empty_cloud),
-                    style = MaterialTheme.typography.bodyMedium,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                )
-            } else {
-                recent.forEach { doc ->
-                    CloudDocumentRow(
-                        doc = doc,
-                        selectionMode = docSelectionMode,
-                        selected = doc.docId in selectedDocIds,
-                        onOpen = { onDocumentClick(doc) },
-                        onToggleSelected = {
-                            selectedDocIds =
-                                if (doc.docId in selectedDocIds) {
-                                    selectedDocIds - doc.docId
-                                } else {
-                                    selectedDocIds + doc.docId
-                                }
-                        },
-                        onBeginSelection = {
-                            docSelectionMode = true
-                            selectedDocIds = selectedDocIds + doc.docId
-                        },
-                    )
-                    Spacer(Modifier.height(8.dp))
+            val sectionHeaderReserve = 64.dp
+            val approxRowWithGapPx = 84f
+            val recentLimit = remember(constraints.maxHeight, constraints.maxWidth) {
+                if (!constraints.hasBoundedHeight) {
+                    5
+                } else {
+                    val listH = (maxHeight - sectionHeaderReserve).coerceAtLeast(0.dp)
+                    val slots = (listH.value / approxRowWithGapPx).roundToInt().coerceAtLeast(1)
+                    slots.coerceIn(3, 20)
                 }
             }
-            Spacer(Modifier.height(16.dp))
+
+            Column(Modifier.fillMaxSize()) {
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        modifier = Modifier.weight(1f),
+                    ) {
+                        Text(
+                            text = stringResource(R.string.recent_documents),
+                            style = MaterialTheme.typography.titleMedium,
+                        )
+                        Box {
+                            IconButton(onClick = { sortMenuExpanded = true }) {
+                                Icon(
+                                    imageVector = Icons.Filled.ExpandMore,
+                                    contentDescription = stringResource(R.string.sort_documents),
+                                    tint = MaterialTheme.colorScheme.onSurface,
+                                )
+                            }
+                            DropdownMenu(
+                                expanded = sortMenuExpanded,
+                                onDismissRequest = { sortMenuExpanded = false },
+                            ) {
+                                DropdownMenuItem(
+                                    text = { Text(stringResource(R.string.sort_name_az)) },
+                                    onClick = {
+                                        cloudDocSort = CloudDocSort.NAME_ASC
+                                        sortMenuExpanded = false
+                                    },
+                                )
+                                DropdownMenuItem(
+                                    text = { Text(stringResource(R.string.sort_name_za)) },
+                                    onClick = {
+                                        cloudDocSort = CloudDocSort.NAME_DESC
+                                        sortMenuExpanded = false
+                                    },
+                                )
+                                DropdownMenuItem(
+                                    text = { Text(stringResource(R.string.sort_date_newest)) },
+                                    onClick = {
+                                        cloudDocSort = CloudDocSort.DATE_NEWEST
+                                        sortMenuExpanded = false
+                                    },
+                                )
+                                DropdownMenuItem(
+                                    text = { Text(stringResource(R.string.sort_date_oldest)) },
+                                    onClick = {
+                                        cloudDocSort = CloudDocSort.DATE_OLDEST
+                                        sortMenuExpanded = false
+                                    },
+                                )
+                            }
+                        }
+                        if (!docSelectionMode) {
+                            IconButton(onClick = onRefreshCloudDocuments) {
+                                Icon(
+                                    imageVector = Icons.Filled.Refresh,
+                                    contentDescription = stringResource(R.string.content_desc_refresh_cloud),
+                                    tint = MaterialTheme.colorScheme.primary,
+                                )
+                            }
+                        }
+                    }
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.End,
+                        modifier = Modifier.wrapContentWidth(),
+                    ) {
+                        if (docSelectionMode) {
+                            TextButton(onClick = exitSelection) {
+                                Text(stringResource(R.string.selection_done))
+                            }
+                            IconButton(
+                                onClick = {
+                                    val docs = sortedCloudDocuments.filter { it.docId in selectedDocIds }
+                                    if (docs.isNotEmpty()) {
+                                        scope.launch {
+                                            runCatching { onShareCloudDocuments(docs) }.onFailure { e ->
+                                                android.widget.Toast.makeText(
+                                                    context,
+                                                    e.message ?: "Share failed",
+                                                    android.widget.Toast.LENGTH_LONG,
+                                                ).show()
+                                            }
+                                        }
+                                    }
+                                },
+                                enabled = selectedDocIds.isNotEmpty(),
+                            ) {
+                                Icon(
+                                    imageVector = Icons.Filled.Share,
+                                    contentDescription = stringResource(R.string.content_desc_selection_share),
+                                    tint = if (selectedDocIds.isNotEmpty()) {
+                                        MaterialTheme.colorScheme.primary
+                                    } else {
+                                        MaterialTheme.colorScheme.outline
+                                    },
+                                )
+                            }
+                            IconButton(
+                                onClick = {
+                                    val docs = sortedCloudDocuments.filter { it.docId in selectedDocIds }
+                                    if (docs.isNotEmpty()) pendingDelete = docs
+                                },
+                                enabled = selectedDocIds.isNotEmpty(),
+                            ) {
+                                Icon(
+                                    imageVector = Icons.Filled.Delete,
+                                    contentDescription = stringResource(R.string.content_desc_selection_delete),
+                                    tint = if (selectedDocIds.isNotEmpty()) {
+                                        Color(0xFFC62828)
+                                    } else {
+                                        MaterialTheme.colorScheme.outline
+                                    },
+                                )
+                            }
+                        } else if (sortedCloudDocuments.size > recentLimit) {
+                            TextButton(onClick = onToggleRecentDocumentsExpanded) {
+                                Text(
+                                    text = if (recentDocumentsExpanded) {
+                                        stringResource(R.string.show_less)
+                                    } else {
+                                        stringResource(R.string.see_all)
+                                    },
+                                )
+                            }
+                        }
+                    }
+                }
+
+                Spacer(Modifier.height(8.dp))
+
+                val recent = if (recentDocumentsExpanded) {
+                    sortedCloudDocuments
+                } else {
+                    sortedCloudDocuments.take(recentLimit)
+                }
+
+                Column(
+                    modifier = Modifier
+                        .weight(1f)
+                        .fillMaxWidth()
+                        .verticalScroll(docListScroll),
+                ) {
+                    if (recent.isEmpty()) {
+                        Text(
+                            text = stringResource(R.string.documents_empty_cloud),
+                            style = MaterialTheme.typography.bodyMedium,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                    } else {
+                        recent.forEach { doc ->
+                            CloudDocumentRow(
+                                doc = doc,
+                                selectionMode = docSelectionMode,
+                                selected = doc.docId in selectedDocIds,
+                                onOpen = { onDocumentClick(doc) },
+                                onToggleSelected = {
+                                    selectedDocIds =
+                                        if (doc.docId in selectedDocIds) {
+                                            selectedDocIds - doc.docId
+                                        } else {
+                                            selectedDocIds + doc.docId
+                                        }
+                                },
+                                onBeginSelection = {
+                                    docSelectionMode = true
+                                    selectedDocIds = selectedDocIds + doc.docId
+                                },
+                            )
+                            Spacer(Modifier.height(8.dp))
+                        }
+                    }
+                    Spacer(Modifier.height(16.dp))
+                }
+            }
         }
 
+        Spacer(
+            Modifier
+                .fillMaxWidth()
+                .height(16.dp)
+                .background(MaterialTheme.colorScheme.surface),
+        )
         BluetoothRow(
             bluetoothModeForPc = bluetoothModeForPc,
             onBluetoothModeChange = onBluetoothModeChange,

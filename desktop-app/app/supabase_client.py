@@ -33,7 +33,7 @@ def _encode_storage_path(storage_path: str) -> str:
 
 
 class SupabaseClient:
-    """REST client for ScanMeow table `documents` and storage bucket `scans`."""
+    """REST client for the `documents` table and the `scans` storage bucket"""
 
     def __init__(self, *, url: str, anon_key: str):
         self._url = url.rstrip("/")
@@ -72,7 +72,7 @@ class SupabaseClient:
         file_name: str,
         min_created_at_millis: int,
     ) -> Optional[CloudDocumentMeta]:
-        """Dacă telefonul a salvat deja PDF-ul în cloud, evităm un al doilea INSERT la primirea TCP."""
+        """If the mobile app already saved this PDF to the cloud, skip a second INSERT when handling TCP"""
         fn_enc = quote(file_name, safe="")
         q = (
             f"/rest/v1/documents?file_name=eq.{fn_enc}"
@@ -101,8 +101,8 @@ class SupabaseClient:
         return r.content
 
     def delete_document(self, *, access_token: str, doc_id: str, storage_path: str) -> None:
-        """Șterge rândul și obiectul din storage. PostgREST poate răspunde 200/204; 404 e OK dacă e deja șters."""
-        # UUID în filtrul eq — păstrăm cratimele ne‑encodate (altfel unele gateway‑uri dau erori false).
+        """Delete the PostgREST row and the storage object. PostgREST may return 200 or 204; 404 is acceptable if the resource is already gone"""
+        # UUID in eq filter: keep hyphens unencoded (some gateways mishandle over-encoding)
         id_enc = quote(str(doc_id), safe="-")
         url_row = f"{self._url}/rest/v1/documents?id=eq.{id_enc}"
         r_row = requests.delete(
@@ -116,7 +116,7 @@ class SupabaseClient:
         enc = _encode_storage_path(storage_path)
         url_st = f"{self._url}/storage/v1/object/scans/{enc}"
         r_st = requests.delete(url_st, headers=self._headers(access_token), timeout=30)
-        # După ștergerea rândului, storage poate fi deja curățat sau bucketul răspunde altfel — nu eșuăm în UI.
+        # After row delete, storage may already be empty; do not fail the UI on that
         if r_st.status_code not in (200, 204, 404):
             try:
                 r_st.raise_for_status()
@@ -130,7 +130,7 @@ class SupabaseClient:
         pdf_bytes: bytes,
         original_file_name: str,
     ) -> Tuple[str, str]:
-        """Returns (document_row_id, storage_path)."""
+        """Return (document_row_id, storage_path)"""
         uid = jwt_sub(access_token)
         safe = (original_file_name or "scan.pdf").replace("/", "_")
         storage_path = f"{uid}/{int(time.time() * 1000)}_{safe}"
@@ -173,7 +173,7 @@ class SupabaseClient:
         return row_id, storage_path
 
     def find_document_id_by_storage_path(self, *, access_token: str, storage_path: str) -> str:
-        """Fallback când INSERT nu întoarce rândul (RLS / Prefer)."""
+        """Resolve row id when INSERT does not return a row (RLS or Prefer headers)"""
         sp_enc = quote(storage_path, safe="")
         r = requests.get(
             f"{self._url}/rest/v1/documents?storage_path=eq.{sp_enc}&select=id&limit=1",

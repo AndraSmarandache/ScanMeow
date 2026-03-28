@@ -88,7 +88,7 @@ import okhttp3.RequestBody.Companion.toRequestBody
 import kotlin.math.max
 import kotlin.math.min
 
-/** Emulator → PC host. Physical device: PC LAN IP. */
+/** Emulator: loopback to the dev PC. Physical device: use the PC's LAN IP */
 private const val SCAN_API_BASE = "http://10.0.2.2:8765"
 private const val DESKTOP_TCP_HOST = "10.0.2.2" // emulator -> host
 private const val DESKTOP_TCP_PORT = 5566
@@ -103,7 +103,7 @@ class MainActivity : ComponentActivity() {
         setContent {
             val context = LocalContext.current
             val scope = rememberCoroutineScope()
-            // OpenCV pipeline can take tens of seconds; default OkHttp timeouts are too short
+            // OpenCV can run for tens of seconds; default OkHttp timeouts are too short for that
             val http = remember {
                 OkHttpClient.Builder()
                     .connectTimeout(120, TimeUnit.SECONDS)
@@ -241,7 +241,7 @@ class MainActivity : ComponentActivity() {
                                         ).show()
                                         return@Button
                                     }
-                                    // Clear prior session so the account picker shows reliably.
+                                    // Clear any prior session so the account picker appears as expected
                                     signInClient.signOut().addOnCompleteListener {
                                         signInLauncher.launch(signInClient.signInIntent)
                                     }
@@ -394,6 +394,15 @@ class MainActivity : ComponentActivity() {
                                 },
                                 bluetoothModeForPc = bluetoothPcMode,
                                 onBluetoothModeChange = { bluetoothPcMode = it },
+                                onRefreshCloudDocuments = {
+                                    scope.launch {
+                                        val uid = supabaseUserId ?: return@launch
+                                        cloudRepo.accessToken = supabaseAccessToken ?: return@launch
+                                        runCatching {
+                                            cloudDocs = cloudRepo.fetchDocumentsFromServer(uid)
+                                        }
+                                    }
+                                },
                                 onShareCloudDocuments = { docs ->
                                     if (docs.isEmpty()) return@MainHomeScreen
                                     val token = supabaseAccessToken
@@ -430,6 +439,13 @@ class MainActivity : ComponentActivity() {
                                             },
                                             Toast.LENGTH_SHORT,
                                         ).show()
+                                        scope.launch {
+                                            val uid = supabaseUserId ?: return@launch
+                                            cloudRepo.accessToken = supabaseAccessToken ?: return@launch
+                                            runCatching {
+                                                cloudDocs = cloudRepo.fetchDocumentsFromServer(uid)
+                                            }
+                                        }
                                     }.onFailure { e ->
                                         Toast.makeText(
                                             context,
@@ -441,11 +457,14 @@ class MainActivity : ComponentActivity() {
                                 onDeleteCloudDocuments = { docs ->
                                     val uid = supabaseUserId
                                         ?: throw IllegalStateException("Not signed in")
+                                    cloudRepo.accessToken = supabaseAccessToken
+                                        ?: throw IllegalStateException("Not signed in")
                                     withContext(Dispatchers.IO) {
                                         for (d in docs) {
                                             cloudRepo.deleteDocument(uid, d)
                                         }
                                     }
+                                    cloudDocs = cloudRepo.fetchDocumentsFromServer(uid)
                                     withContext(Dispatchers.Main) {
                                         Toast.makeText(
                                             context,
@@ -638,8 +657,11 @@ class MainActivity : ComponentActivity() {
                                 modifier = Modifier.padding(innerPadding),
                             )
 
-                            is AppScreen.ScannedResult -> ScanResultScreen(
+                            is AppScreen.ScannedResult -> {
+                                var saveBusy by remember(s.jpeg) { mutableStateOf(false) }
+                                ScanResultScreen(
                                 scannedJpeg = s.jpeg,
+                                saveInProgress = saveBusy,
                                 onCancel = { screen = AppScreen.Home },
                                 onSave = {
                                     val uid = supabaseUserId
@@ -647,39 +669,49 @@ class MainActivity : ComponentActivity() {
                                         Toast.makeText(context, "Not signed in.", Toast.LENGTH_LONG).show()
                                         return@ScanResultScreen
                                     }
+                                    if (saveBusy) return@ScanResultScreen
+                                    saveBusy = true
                                     scope.launch {
-                                        val fileName = "scanmeow_${System.currentTimeMillis()}.pdf"
-                                        val pdfBytes = runCatching {
-                                            createCompressedPdfFromJpeg(s.jpeg)
-                                        }.getOrElse { e ->
-                                            Toast.makeText(
-                                                context,
-                                                "PDF creation failed: ${e.message ?: "unknown"}",
-                                                Toast.LENGTH_LONG,
-                                            ).show()
-                                            return@launch
-                                        }
+                                        try {
+                                            val fileName = "scanmeow_${System.currentTimeMillis()}.pdf"
+                                            val pdfBytes = runCatching {
+                                                createCompressedPdfFromJpeg(s.jpeg)
+                                            }.getOrElse { e ->
+                                                withContext(Dispatchers.Main) {
+                                                    Toast.makeText(
+                                                        context,
+                                                        "PDF creation failed: ${e.message ?: "unknown"}",
+                                                        Toast.LENGTH_LONG,
+                                                    ).show()
+                                                }
+                                                return@launch
+                                            }
 
-                                        runCatching {
-                                            cloudRepo.uploadPdfAndMeta(uid, pdfBytes, fileName)
-                                        }.onFailure { e ->
+                                            runCatching {
+                                                cloudRepo.uploadPdfAndMeta(uid, pdfBytes, fileName)
+                                            }.onFailure { e ->
+                                                withContext(Dispatchers.Main) {
+                                                    Toast.makeText(
+                                                        context,
+                                                        "Cloud save failed: ${e.message ?: "unknown"}",
+                                                        Toast.LENGTH_LONG,
+                                                    ).show()
+                                                }
+                                                return@launch
+                                            }
+
                                             withContext(Dispatchers.Main) {
                                                 Toast.makeText(
                                                     context,
-                                                    "Cloud save failed: ${e.message ?: "unknown"}",
-                                                    Toast.LENGTH_LONG,
+                                                    context.getString(R.string.toast_saved_cloud),
+                                                    Toast.LENGTH_SHORT,
                                                 ).show()
+                                                screen = AppScreen.Home
                                             }
-                                            return@launch
-                                        }
-
-                                        withContext(Dispatchers.Main) {
-                                            Toast.makeText(
-                                                context,
-                                                context.getString(R.string.toast_saved_cloud),
-                                                Toast.LENGTH_SHORT,
-                                            ).show()
-                                            screen = AppScreen.Home
+                                        } finally {
+                                            withContext(Dispatchers.Main) {
+                                                saveBusy = false
+                                            }
                                         }
                                     }
                                 },
@@ -718,6 +750,7 @@ class MainActivity : ComponentActivity() {
                                 cancelLabel = stringResource(R.string.action_cancel),
                                 saveLabel = stringResource(R.string.action_save),
                             )
+                            }
                         }
                     }
                     }

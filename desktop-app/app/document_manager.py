@@ -73,7 +73,7 @@ class DocumentManager:
         cloud_storage_path: Optional[str] = None,
         display_name: Optional[str] = None,
     ) -> "Document":
-        """Copy a file into managed storage and record it in the DB."""
+        """Copy a file into managed storage and record it in the database"""
         name = (display_name or "").strip() or os.path.basename(src_path)
         dst_path = self._unique_path(name)
         shutil.copy2(src_path, dst_path)
@@ -158,7 +158,7 @@ class DocumentManager:
             conn.execute("UPDATE documents SET name=? WHERE id=?", (new_name, doc_id))
 
     def sync_cloud_file_names_from_pairs(self, pairs: List[Tuple[str, str]]) -> bool:
-        """Synchronize local display names with Supabase `file_name` (e.g. after mobile rename)."""
+        """Synchronize local display names with Supabase `file_name` (for example after a mobile rename)"""
         changed = False
         with self._connect() as conn:
             for cloud_doc_id, file_name in pairs:

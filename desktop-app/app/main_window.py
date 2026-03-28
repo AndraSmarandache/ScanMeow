@@ -61,7 +61,7 @@ _CHK_TICK_PNG_PATH: Optional[str] = None
 
 
 def _checkbox_white_tick_image_url() -> str:
-    """Return a file://-friendly path to a small PNG used as QSS image for the checked state."""
+    """Return a file://-friendly path to a small PNG used as the QSS image for the checked state"""
     global _CHK_TICK_PNG_PATH
     if _CHK_TICK_PNG_PATH is not None and os.path.isfile(_CHK_TICK_PNG_PATH):
         return _CHK_TICK_PNG_PATH.replace("\\", "/")
@@ -354,7 +354,7 @@ class Sidebar(QWidget):
         self.page_changed.emit(idx)
 
     def activate(self, idx: int) -> None:
-        """External call to switch active nav without re-emitting."""
+        """Switch the active nav highlight without emitting page_changed again"""
         self._btn_recent.set_active(idx == 0)
         self._btn_all.set_active(idx == 1)
 
@@ -635,6 +635,28 @@ class DocumentListView(QWidget):
         tbl.addWidget(sim_btn)
         tbl.addSpacing(8)
 
+        self._done_sel_btn = QPushButton("Done")
+        self._done_sel_btn.setFixedHeight(34)
+        self._done_sel_btn.setVisible(False)
+        self._done_sel_btn.setCursor(Qt.PointingHandCursor)
+        self._done_sel_btn.setStyleSheet(f"""
+            QPushButton {{
+                background-color: #ffffff;
+                color: {_TEXT_PRIMARY};
+                border: 1px solid #dadce0;
+                border-radius: 4px;
+                font-size: 12px;
+                font-weight: 500;
+                padding: 0 14px;
+            }}
+            QPushButton:hover:enabled {{ background-color: #f8f9fa; }}
+            QPushButton:pressed {{ background-color: #e8eaed; }}
+            QPushButton:disabled {{ background-color: #f5f5f5; color: #9aa0a6; }}
+        """)
+        self._done_sel_btn.clicked.connect(self._on_done_selection)
+        tbl.addWidget(self._done_sel_btn)
+        tbl.addSpacing(8)
+
         self._delete_sel_btn = QPushButton("Delete selected")
         self._delete_sel_btn.setFixedHeight(34)
         self._delete_sel_btn.setEnabled(False)
@@ -728,6 +750,18 @@ class DocumentListView(QWidget):
         self._shortcut_select_all.setContext(Qt.WidgetWithChildrenShortcut)
         self._shortcut_select_all.activated.connect(self._select_all_visible)
 
+    def _refresh_selection_chrome(self) -> None:
+        self._done_sel_btn.setVisible(self._selection_mode)
+        self._delete_sel_btn.setEnabled(self._selection_mode and len(self._selected_ids) > 0)
+
+    def _on_done_selection(self) -> None:
+        self._selection_mode = False
+        self._selected_ids.clear()
+        for row in self._rows:
+            row.set_checkbox_visible(False)
+            row.set_checked(False)
+        self._refresh_selection_chrome()
+
     def _select_all_visible(self) -> None:
         if not self._rows:
             return
@@ -736,8 +770,7 @@ class DocumentListView(QWidget):
             row.set_checkbox_visible(True)
             self._selected_ids.add(row.doc.id)
             row.set_checked(True)
-        n = len(self._selected_ids)
-        self._delete_sel_btn.setEnabled(n > 0)
+        self._refresh_selection_chrome()
 
     def on_row_long_select(self, doc: Document) -> None:
         self._selection_mode = True
@@ -756,11 +789,11 @@ class DocumentListView(QWidget):
                     row.set_checked(True)
                     break
         n = len(self._selected_ids)
-        self._delete_sel_btn.setEnabled(n > 0)
         if n == 0:
             self._selection_mode = False
             for row in self._rows:
                 row.set_checkbox_visible(False)
+        self._refresh_selection_chrome()
 
     def _sorted_documents(self) -> List[Document]:
         docs = list(self._documents_source)
@@ -816,6 +849,7 @@ class DocumentListView(QWidget):
             empty.setAlignment(Qt.AlignCenter)
             empty.setStyleSheet(f"font-size: 13px; color: {_COL_HEADER}; padding: 40px;")
             self._list_layout.insertWidget(0, empty)
+            self._refresh_selection_chrome()
             return
 
         for doc in sorted_docs:
@@ -831,7 +865,7 @@ class DocumentListView(QWidget):
             for row in self._rows:
                 row.set_checkbox_visible(True)
                 row.set_checked(row.doc.id in self._selected_ids)
-            self._delete_sel_btn.setEnabled(len(self._selected_ids) > 0)
+        self._refresh_selection_chrome()
 
     def _on_row_selection(self, doc_sql_id: int, checked: bool) -> None:
         if checked:
@@ -839,11 +873,11 @@ class DocumentListView(QWidget):
         else:
             self._selected_ids.discard(doc_sql_id)
         n = len(self._selected_ids)
-        self._delete_sel_btn.setEnabled(n > 0)
         if n == 0:
             self._selection_mode = False
             for row in self._rows:
                 row.set_checkbox_visible(False)
+        self._refresh_selection_chrome()
 
     def _emit_delete_selected(self) -> None:
         docs = [r.doc for r in self._rows if r.doc.id in self._selected_ids]
@@ -953,7 +987,7 @@ class DocumentListView(QWidget):
 
 
 class _LongPressTitleLabel(QLabel):
-    """Long press (~550ms) to rename cloud document title."""
+    """Label that emits a signal after a ~550ms press (cloud title rename)"""
 
     long_pressed = pyqtSignal()
 
@@ -1318,7 +1352,7 @@ class MainWindow(QMainWindow):
         self._sb_url = ""
         self._sb_anon = ""
         self._sb_access_token = None
-        self._signed_in_uid = None  # set when Google/Supabase completes; needed before first _refresh_lists()
+        self._signed_in_uid = None  # set after Google/Supabase sign-in before the first list refresh
 
         # ── central widget ─────────────────────────────────────────────────
         central = QWidget()
@@ -1480,7 +1514,7 @@ class MainWindow(QMainWindow):
         try:
             self.statusBar().showMessage(msg, 10000)
         except Exception:
-            # If statusBar isn't ready for some reason, ignore
+            # Ignore if the status bar is not available
             pass
 
     def _sign_in_google(self) -> None:
@@ -1576,10 +1610,11 @@ class MainWindow(QMainWindow):
         self._cloud_user_sync.status.connect(self._on_firebase_status)
         self._cloud_user_sync.pdf_received.connect(self._on_pdf_received)
         self._cloud_user_sync.names_updated.connect(self._refresh_lists)
-        self._cloud_user_sync.start()
         self._signed_in_uid = uid
         self._set_auth_state(True, display_name or uid, picture_url)
+        # Import cloud rows before starting the poller to avoid duplicate rows for the same cloud_doc_id
         self._bootstrap_supabase_to_local()
+        self._cloud_user_sync.start()
         QMessageBox.information(self, "Signed in", "Desktop is now synced to your cloud documents.")
 
     def _bootstrap_supabase_to_local(self, prefetched_docs=None) -> None:
@@ -1624,7 +1659,7 @@ class MainWindow(QMainWindow):
         self._refresh_lists()
 
     def _refresh_cloud_manual(self) -> None:
-        """Pull list + names from Supabase now; fetch any PDFs not yet local."""
+        """Fetch the latest document list and names from Supabase; download any PDFs missing locally"""
         if not self._signed_in_uid or not self._sb_access_token:
             self._on_firebase_status("Sign in to refresh the cloud list.")
             return
@@ -1695,23 +1730,25 @@ class MainWindow(QMainWindow):
         display_name: str = "",
     ) -> None:
         try:
+            if cloud_doc_id and self._manager.has_cloud_doc(cloud_doc_id):
+                try:
+                    os.remove(pdf_path)
+                except OSError:
+                    pass
+                self._refresh_lists()
+                return
             doc = self._manager.add_from_file(
                 pdf_path,
                 cloud_doc_id or None,
                 cloud_storage_path or None,
                 display_name=display_name or None,
             )
-            # inbox is just a staging area; managed storage already has the file
             try:
                 os.remove(pdf_path)
             except OSError:
                 pass
             self._refresh_lists()
-            QMessageBox.information(
-                self,
-                "Document received",
-                f'"{doc.name}" was added successfully.',
-            )
+            self._on_firebase_status(f'Updated library: "{doc.name}"')
         except Exception as exc:
             QMessageBox.critical(self, "Error", str(exc))
 
@@ -1794,7 +1831,7 @@ class PdfReceiver(QThread):
                     try:
                         with open(out_path, "rb") as f:
                             pdf_bytes = f.read()
-                        # Mobile may have already uploaded this PDF; avoid duplicate cloud rows.
+                        # Skip a second cloud insert if the mobile app already uploaded this PDF
                         min_ms = int(time.time() * 1000) - 25 * 60 * 1000
                         existing = self._supabase.find_recent_document_by_file_name(
                             access_token=access_token,
