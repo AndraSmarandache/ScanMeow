@@ -1,10 +1,16 @@
 import os
+import tempfile
+import time
+from typing import List, Optional, Tuple
 
-from PyQt5.QtCore import Qt, QRect, QUrl, QThread, pyqtSignal
+from PyQt5.QtCore import Qt, QEvent, QRect, QUrl, QThread, QTimer, pyqtSignal
 from PyQt5.QtGui import QDesktopServices
-from PyQt5.QtGui import QPixmap, QFont, QIcon, QCloseEvent, QPainter, QPainterPath
+from PyQt5.QtGui import QColor, QPixmap, QFont, QIcon, QKeySequence, QCloseEvent, QPainter, QPainterPath, QPen
 from PyQt5.QtWidgets import (
+    QAction,
+    QCheckBox,
     QFileDialog,
+    QInputDialog,
     QFrame,
     QHBoxLayout,
     QLabel,
@@ -13,8 +19,10 @@ from PyQt5.QtWidgets import (
     QMessageBox,
     QPushButton,
     QScrollArea,
+    QShortcut,
     QSizePolicy,
     QStackedWidget,
+    QStyle,
     QToolButton,
     QVBoxLayout,
     QWidgetAction,
@@ -23,9 +31,9 @@ from PyQt5.QtWidgets import (
 import requests
 
 from .document_manager import Document, DocumentManager
-from .firebase_upload import FirebaseAdminUploader
-from .firebase_sync import FirebaseUserSyncThread
-from .google_oauth_desktop import GoogleFirebaseSignInThread, OAuthConfig
+from .google_oauth_desktop import GoogleSupabaseSignInThread, OAuthConfig
+from .supabase_client import SupabaseClient
+from .supabase_sync import SupabaseUserSyncThread
 
 try:
     import fitz  # PyMuPDF
@@ -48,6 +56,32 @@ _TEXT_PRIMARY = "#202124"
 _TEXT_SECONDARY = "#5f6368"
 
 _ASSETS_DIR = os.path.join(os.path.dirname(os.path.dirname(__file__)), "assets")
+
+_CHK_TICK_PNG_PATH: Optional[str] = None
+
+
+def _checkbox_white_tick_image_url() -> str:
+    """Return a file://-friendly path to a small PNG used as QSS image for the checked state."""
+    global _CHK_TICK_PNG_PATH
+    if _CHK_TICK_PNG_PATH is not None and os.path.isfile(_CHK_TICK_PNG_PATH):
+        return _CHK_TICK_PNG_PATH.replace("\\", "/")
+    pm = QPixmap(16, 16)
+    pm.fill(Qt.transparent)
+    p = QPainter(pm)
+    p.setRenderHint(QPainter.Antialiasing, True)
+    pen = QPen(QColor("#ffffff"))
+    pen.setWidthF(2.25)
+    pen.setCapStyle(Qt.RoundCap)
+    pen.setJoinStyle(Qt.RoundJoin)
+    p.setPen(pen)
+    p.drawLine(3, 8, 7, 12)
+    p.drawLine(7, 12, 13, 4)
+    p.end()
+    fd, path = tempfile.mkstemp(suffix=".png", prefix="smw_chk_")
+    os.close(fd)
+    pm.save(path, "PNG")
+    _CHK_TICK_PNG_PATH = path
+    return path.replace("\\", "/")
 
 
 # ── helpers ────────────────────────────────────────────────────────────────────
@@ -329,14 +363,20 @@ class Sidebar(QWidget):
 
 class _DocumentRow(QWidget):
     open_requested = pyqtSignal(object)
+    selection_toggled = pyqtSignal(int, bool)
 
-    def __init__(self, doc: Document, parent=None):
+    def __init__(self, doc: Document, list_view: "DocumentListView", parent=None):
         super().__init__(parent)
         self.doc = doc
+        self._list_view = list_view
         self.setAttribute(Qt.WA_StyledBackground, True)
         self.setStyleSheet("background-color: #ffffff;")
         self.setFixedHeight(62)
         self.setMinimumWidth(460)
+
+        self._lp_timer = QTimer(self)
+        self._lp_timer.setSingleShot(True)
+        self._lp_timer.timeout.connect(self._on_long_press)
 
         root = QVBoxLayout(self)
         root.setContentsMargins(0, 0, 0, 0)
@@ -345,6 +385,29 @@ class _DocumentRow(QWidget):
         row = QHBoxLayout()
         row.setContentsMargins(16, 0, 16, 0)
         row.setSpacing(12)
+
+        self._chk = QCheckBox()
+        self._chk.setCursor(Qt.PointingHandCursor)
+        self._chk.setVisible(False)
+        _tick_url = _checkbox_white_tick_image_url()
+        self._chk.setStyleSheet(
+            f"""
+            QCheckBox::indicator {{
+                width: 20px;
+                height: 20px;
+                border-radius: 10px;
+                border: 2px solid {_BTN_BLUE};
+                background: #ffffff;
+            }}
+            QCheckBox::indicator:checked {{
+                background-color: {_BTN_BLUE};
+                border: 2px solid {_BTN_BLUE};
+                image: url("{_tick_url}");
+            }}
+            """
+        )
+        self._chk.stateChanged.connect(self._chk_changed)
+        row.addWidget(self._chk)
 
         # pdf icon
         icon = QLabel("📄")
@@ -404,18 +467,68 @@ class _DocumentRow(QWidget):
         root.addWidget(inner)
         root.addWidget(_separator())
 
+        inner.installEventFilter(self)
+        for ch in inner.findChildren(QWidget):
+            if not isinstance(ch, (QPushButton, QCheckBox)):
+                ch.installEventFilter(self)
+
+    def eventFilter(self, obj, event):
+        if isinstance(obj, (QPushButton, QCheckBox)):
+            return False
+        et = event.type()
+        if et == QEvent.MouseButtonPress and event.button() == Qt.LeftButton:
+            self._long_press_fired = False
+            self._lp_timer.start(550)
+        elif et == QEvent.MouseButtonRelease and event.button() == Qt.LeftButton:
+            self._lp_timer.stop()
+            self._long_press_fired = False
+        return False
+
+    def _chk_changed(self, st: int) -> None:
+        self.selection_toggled.emit(self.doc.id, st == Qt.Checked)
+
+    def _on_long_press(self) -> None:
+        self._long_press_fired = True
+        self._list_view.on_row_long_select(self.doc)
+
+    def set_checkbox_visible(self, visible: bool) -> None:
+        self._chk.setVisible(visible)
+
+    def set_checked(self, checked: bool) -> None:
+        self._chk.blockSignals(True)
+        self._chk.setChecked(checked)
+        self._chk.blockSignals(False)
+
 
 # ── document list view ─────────────────────────────────────────────────────────
+
+_SORT_MENU_ITEMS: Tuple[Tuple[str, str], ...] = (
+    ("Name (A–Z)", "name_asc"),
+    ("Name (Z–A)", "name_desc"),
+    ("Date (newest first)", "date_desc"),
+    ("Date (oldest first)", "date_asc"),
+    ("Size (largest first)", "size_desc"),
+    ("Size (smallest first)", "size_asc"),
+)
 
 class DocumentListView(QWidget):
     open_requested = pyqtSignal(object)
     receive_requested = pyqtSignal()
     sign_in_requested = pyqtSignal()
+    delete_selected_requested = pyqtSignal(list)
+    refresh_cloud_requested = pyqtSignal()
 
     def __init__(self, title: str, parent=None):
         super().__init__(parent)
         self._title = title
         self.setStyleSheet("background-color: #ffffff;")
+        self._rows: list = []
+        self._selected_ids: set = set()
+        self._selection_mode = False
+        self._documents_source: List[Document] = []
+        self._sort_mode: str = (
+            "date_desc" if title.lower().startswith("recent") else "name_asc"
+        )
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
@@ -479,6 +592,27 @@ class DocumentListView(QWidget):
         self._profile_btn.setCursor(Qt.PointingHandCursor)
         self._profile_btn.clicked.connect(self._open_profile_menu)
         tbl.addWidget(self._profile_btn)
+        tbl.addSpacing(6)
+
+        self._refresh_cloud_btn = QToolButton()
+        self._refresh_cloud_btn.setIcon(self.style().standardIcon(QStyle.SP_BrowserReload))
+        self._refresh_cloud_btn.setFixedSize(34, 34)
+        self._refresh_cloud_btn.setToolButtonStyle(Qt.ToolButtonIconOnly)
+        self._refresh_cloud_btn.setCursor(Qt.PointingHandCursor)
+        self._refresh_cloud_btn.setToolTip("Refresh cloud list")
+        self._refresh_cloud_btn.setEnabled(False)
+        self._refresh_cloud_btn.setStyleSheet("""
+            QToolButton {
+                background-color: transparent;
+                border: none;
+                border-radius: 4px;
+            }
+            QToolButton:hover:enabled { background-color: #e8eaed; }
+            QToolButton:pressed { background-color: #dadce0; }
+            QToolButton:disabled { background-color: transparent; }
+        """)
+        self._refresh_cloud_btn.clicked.connect(self.refresh_cloud_requested.emit)
+        tbl.addWidget(self._refresh_cloud_btn)
         tbl.addSpacing(10)
 
         sim_btn = QPushButton("+ Simulate Receive")
@@ -499,6 +633,27 @@ class DocumentListView(QWidget):
         sim_btn.setCursor(Qt.PointingHandCursor)
         sim_btn.clicked.connect(self.receive_requested)
         tbl.addWidget(sim_btn)
+        tbl.addSpacing(8)
+
+        self._delete_sel_btn = QPushButton("Delete selected")
+        self._delete_sel_btn.setFixedHeight(34)
+        self._delete_sel_btn.setEnabled(False)
+        self._delete_sel_btn.setStyleSheet("""
+            QPushButton {
+                background-color: #c62828;
+                color: #ffffff;
+                border: none;
+                border-radius: 4px;
+                font-size: 12px;
+                font-weight: 500;
+                padding: 0 14px;
+            }
+            QPushButton:hover:enabled { background-color: #a51f1f; }
+            QPushButton:disabled { background-color: #cccccc; color: #666666; }
+        """)
+        self._delete_sel_btn.setCursor(Qt.PointingHandCursor)
+        self._delete_sel_btn.clicked.connect(self._emit_delete_selected)
+        tbl.addWidget(self._delete_sel_btn)
 
         layout.addWidget(topbar)
         layout.addWidget(_separator())
@@ -508,12 +663,36 @@ class DocumentListView(QWidget):
         hdr.setFixedHeight(30)
         hdr.setStyleSheet("background-color: #f8f9fa;")
         hdrl = QHBoxLayout(hdr)
-        hdrl.setContentsMargins(62, 0, 16, 0)  # align with row content
+        hdrl.setContentsMargins(48, 0, 16, 0)
 
-        name_hdr = QLabel("Name  ↑")
-        name_hdr.setStyleSheet(
+        name_hdr_wrap = QWidget()
+        nhl = QHBoxLayout(name_hdr_wrap)
+        nhl.setContentsMargins(0, 0, 0, 0)
+        nhl.setSpacing(2)
+        self._name_column_lbl = QLabel("Name")
+        self._name_column_lbl.setStyleSheet(
             f"font-size: 11px; font-weight: 600; color: {_COL_HEADER};"
         )
+        self._name_sort_btn = QToolButton()
+        self._name_sort_btn.setIcon(self.style().standardIcon(QStyle.SP_ArrowDown))
+        self._name_sort_btn.setToolButtonStyle(Qt.ToolButtonIconOnly)
+        self._name_sort_btn.setAutoRaise(True)
+        self._name_sort_btn.setToolTip("Sort documents")
+        self._name_sort_btn.setStyleSheet(
+            "QToolButton { border: none; padding: 0 2px; background: transparent; }"
+            "QToolButton:hover { background: #e8eaed; border-radius: 2px; }"
+        )
+        self._sort_menu = QMenu(self)
+        for label, mode in _SORT_MENU_ITEMS:
+            act = QAction(label, self)
+            m = mode
+            act.triggered.connect(lambda _checked=False, sm=m: self._set_sort_mode(sm))
+            self._sort_menu.addAction(act)
+        self._name_sort_btn.clicked.connect(self._show_sort_menu_at_button)
+        nhl.addWidget(self._name_column_lbl, 0)
+        nhl.addWidget(self._name_sort_btn, 0)
+        nhl.addStretch(1)
+
         size_hdr = QLabel("Size")
         size_hdr.setStyleSheet(
             f"font-size: 11px; font-weight: 600; color: {_COL_HEADER};"
@@ -521,7 +700,7 @@ class DocumentListView(QWidget):
         size_hdr.setFixedWidth(56)
         size_hdr.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
 
-        hdrl.addWidget(name_hdr)
+        hdrl.addWidget(name_hdr_wrap, 0)
         hdrl.addStretch()
         hdrl.addWidget(size_hdr)
         hdrl.addSpacing(144)  # room for "Open document" button
@@ -545,6 +724,132 @@ class DocumentListView(QWidget):
         self._scroll.setWidget(self._list_widget)
         layout.addWidget(self._scroll)
 
+        self._shortcut_select_all = QShortcut(QKeySequence.SelectAll, self)
+        self._shortcut_select_all.setContext(Qt.WidgetWithChildrenShortcut)
+        self._shortcut_select_all.activated.connect(self._select_all_visible)
+
+    def _select_all_visible(self) -> None:
+        if not self._rows:
+            return
+        self._selection_mode = True
+        for row in self._rows:
+            row.set_checkbox_visible(True)
+            self._selected_ids.add(row.doc.id)
+            row.set_checked(True)
+        n = len(self._selected_ids)
+        self._delete_sel_btn.setEnabled(n > 0)
+
+    def on_row_long_select(self, doc: Document) -> None:
+        self._selection_mode = True
+        for row in self._rows:
+            row.set_checkbox_visible(True)
+        if doc.id in self._selected_ids:
+            self._selected_ids.discard(doc.id)
+            for row in self._rows:
+                if row.doc.id == doc.id:
+                    row.set_checked(False)
+                    break
+        else:
+            self._selected_ids.add(doc.id)
+            for row in self._rows:
+                if row.doc.id == doc.id:
+                    row.set_checked(True)
+                    break
+        n = len(self._selected_ids)
+        self._delete_sel_btn.setEnabled(n > 0)
+        if n == 0:
+            self._selection_mode = False
+            for row in self._rows:
+                row.set_checkbox_visible(False)
+
+    def _sorted_documents(self) -> List[Document]:
+        docs = list(self._documents_source)
+        key_name = lambda d: d.name.lower()
+        key_date = lambda d: d.received_at
+        key_size = lambda d: d.size_bytes
+        mode = self._sort_mode
+        if mode == "name_asc":
+            docs.sort(key=key_name)
+        elif mode == "name_desc":
+            docs.sort(key=key_name, reverse=True)
+        elif mode == "date_desc":
+            docs.sort(key=key_date, reverse=True)
+        elif mode == "date_asc":
+            docs.sort(key=key_date)
+        elif mode == "size_desc":
+            docs.sort(key=key_size, reverse=True)
+        elif mode == "size_asc":
+            docs.sort(key=key_size)
+        else:
+            docs.sort(key=key_name)
+        return docs
+
+    def _show_sort_menu_at_button(self) -> None:
+        btn = self._name_sort_btn
+        self._sort_menu.exec_(btn.mapToGlobal(btn.rect().bottomLeft()))
+
+    def _set_sort_mode(self, mode: str) -> None:
+        if self._sort_mode == mode:
+            return
+        self._sort_mode = mode
+        if self._documents_source:
+            self._rebuild_document_rows(preserve_selection=True)
+
+    def _rebuild_document_rows(self, *, preserve_selection: bool) -> None:
+        preserved_ids = set(self._selected_ids) if preserve_selection else set()
+        preserved_mode = self._selection_mode if preserve_selection else False
+
+        while self._list_layout.count() > 1:
+            item = self._list_layout.takeAt(0)
+            if item.widget():
+                item.widget().deleteLater()
+
+        self._rows = []
+        if not preserve_selection:
+            self._selected_ids.clear()
+            self._selection_mode = False
+            self._delete_sel_btn.setEnabled(False)
+
+        sorted_docs = self._sorted_documents()
+        if not sorted_docs:
+            empty = QLabel("No cloud documents yet.\nSign in to sync, or send a scan from the mobile app.")
+            empty.setAlignment(Qt.AlignCenter)
+            empty.setStyleSheet(f"font-size: 13px; color: {_COL_HEADER}; padding: 40px;")
+            self._list_layout.insertWidget(0, empty)
+            return
+
+        for doc in sorted_docs:
+            row = _DocumentRow(doc, self)
+            row.open_requested.connect(self.open_requested)
+            row.selection_toggled.connect(self._on_row_selection)
+            self._rows.append(row)
+            self._list_layout.insertWidget(self._list_layout.count() - 1, row)
+
+        if preserve_selection and preserved_mode and preserved_ids:
+            self._selection_mode = True
+            self._selected_ids = {i for i in preserved_ids if any(r.doc.id == i for r in self._rows)}
+            for row in self._rows:
+                row.set_checkbox_visible(True)
+                row.set_checked(row.doc.id in self._selected_ids)
+            self._delete_sel_btn.setEnabled(len(self._selected_ids) > 0)
+
+    def _on_row_selection(self, doc_sql_id: int, checked: bool) -> None:
+        if checked:
+            self._selected_ids.add(doc_sql_id)
+        else:
+            self._selected_ids.discard(doc_sql_id)
+        n = len(self._selected_ids)
+        self._delete_sel_btn.setEnabled(n > 0)
+        if n == 0:
+            self._selection_mode = False
+            for row in self._rows:
+                row.set_checkbox_visible(False)
+
+    def _emit_delete_selected(self) -> None:
+        docs = [r.doc for r in self._rows if r.doc.id in self._selected_ids]
+        if docs:
+            self.delete_selected_requested.emit(docs)
+
     def set_auth_state(self, signed_in: bool, label: str = "", picture_url: str = "") -> None:
         self._auth_signed_in = signed_in
         self._auth_label = label if (signed_in and label) else ("Signed in" if signed_in else "Not signed in")
@@ -554,6 +859,12 @@ class DocumentListView(QWidget):
         self._profile_btn.setVisible(signed_in)
         self._profile_btn.setText("👤")
         self._profile_btn.setIcon(QIcon())
+        self._refresh_cloud_btn.setEnabled(signed_in)
+        self._refresh_cloud_btn.setToolTip(
+            "Refresh cloud list (titles and new documents)"
+            if signed_in
+            else "Sign in to refresh the cloud list"
+        )
         if signed_in:
             self._apply_profile_icon()
 
@@ -634,29 +945,41 @@ class DocumentListView(QWidget):
         menu.exec_(self._profile_btn.mapToGlobal(self._profile_btn.rect().bottomLeft()))
 
     def set_documents(self, docs: list) -> None:
-        # clear existing rows (keep the trailing stretch)
-        while self._list_layout.count() > 1:
-            item = self._list_layout.takeAt(0)
-            if item.widget():
-                item.widget().deleteLater()
-
-        if not docs:
-            empty = QLabel("No documents yet.\nUse '+ Simulate Receive' to add one.")
-            empty.setAlignment(Qt.AlignCenter)
-            empty.setStyleSheet(f"font-size: 13px; color: {_COL_HEADER}; padding: 40px;")
-            self._list_layout.insertWidget(0, empty)
-            return
-
-        for doc in docs:
-            row = _DocumentRow(doc)
-            row.open_requested.connect(self.open_requested)
-            self._list_layout.insertWidget(self._list_layout.count() - 1, row)
+        self._documents_source = list(docs) if docs else []
+        self._rebuild_document_rows(preserve_selection=False)
 
 
 # ── document viewer ────────────────────────────────────────────────────────────
 
+
+class _LongPressTitleLabel(QLabel):
+    """Long press (~550ms) to rename cloud document title."""
+
+    long_pressed = pyqtSignal()
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self._hold = QTimer(self)
+        self._hold.setSingleShot(True)
+        self._hold.timeout.connect(self.long_pressed.emit)
+
+    def mousePressEvent(self, event):
+        if event.button() == Qt.LeftButton:
+            self._hold.start(550)
+        super().mousePressEvent(event)
+
+    def mouseReleaseEvent(self, event):
+        self._hold.stop()
+        super().mouseReleaseEvent(event)
+
+    def leaveEvent(self, event):
+        self._hold.stop()
+        super().leaveEvent(event)
+
+
 class DocumentViewer(QWidget):
     back_requested = pyqtSignal()
+    rename_title_requested = pyqtSignal()
 
     _ZOOM_STEPS = [0.25, 0.5, 0.67, 0.75, 0.9, 1.0, 1.1, 1.25, 1.5, 1.75, 2.0, 2.5, 3.0]
 
@@ -664,10 +987,11 @@ class DocumentViewer(QWidget):
         super().__init__(parent)
         self.setStyleSheet("background-color: #ffffff;")
 
-        self._pdf         = None
-        self._zoom        = 1.0
-        self._rotation    = 0
-        self._two_page    = False
+        self._pdf = None
+        self._doc: Optional[Document] = None
+        self._zoom = 1.0
+        self._rotation = 0
+        self._two_page = False
         self._page_labels = []
 
         layout = QVBoxLayout(self)
@@ -697,10 +1021,12 @@ class DocumentViewer(QWidget):
         back_btn.setCursor(Qt.PointingHandCursor)
         back_btn.clicked.connect(self.back_requested)
 
-        self._title_lbl = QLabel()
+        self._title_lbl = _LongPressTitleLabel()
         self._title_lbl.setStyleSheet(
             f"font-size: 18px; font-weight: 700; color: {_TEXT_PRIMARY};"
         )
+        self._title_lbl.setToolTip("Long press to rename title (cloud documents only)")
+        self._title_lbl.long_pressed.connect(self.rename_title_requested)
 
         tbl.addWidget(back_btn)
         tbl.addSpacing(16)
@@ -811,7 +1137,14 @@ class DocumentViewer(QWidget):
 
     # ── public ─────────────────────────────────────────────────────────────
 
+    def current_document(self) -> Optional[Document]:
+        return self._doc
+
+    def set_viewer_title(self, text: str) -> None:
+        self._title_lbl.setText(text)
+
     def load_document(self, doc: Document) -> None:
+        self._doc = doc
         self._title_lbl.setText(doc.name)
         if self._pdf:
             self._pdf.close()
@@ -982,6 +1315,10 @@ class MainWindow(QMainWindow):
 
         self._manager = DocumentManager()
         self._current_page = 0  # 0=recent, 1=all
+        self._sb_url = ""
+        self._sb_anon = ""
+        self._sb_access_token = None
+        self._signed_in_uid = None  # set when Google/Supabase completes; needed before first _refresh_lists()
 
         # ── central widget ─────────────────────────────────────────────────
         central = QWidget()
@@ -1011,7 +1348,12 @@ class MainWindow(QMainWindow):
         self._view_all.receive_requested.connect(self._simulate_receive)
         self._view_recent.sign_in_requested.connect(self._sign_in_google)
         self._view_all.sign_in_requested.connect(self._sign_in_google)
+        self._view_recent.delete_selected_requested.connect(self._on_delete_selected_docs)
+        self._view_all.delete_selected_requested.connect(self._on_delete_selected_docs)
+        self._view_recent.refresh_cloud_requested.connect(self._refresh_cloud_manual)
+        self._view_all.refresh_cloud_requested.connect(self._refresh_cloud_manual)
         self._viewer.back_requested.connect(self._back_to_list)
+        self._viewer.rename_title_requested.connect(self._on_viewer_rename_title)
 
         self._stack.addWidget(self._view_recent)  # index 0
         self._stack.addWidget(self._view_all)      # index 1
@@ -1039,6 +1381,13 @@ class MainWindow(QMainWindow):
         self._sidebar.activate(self._current_page)
 
     def _simulate_receive(self) -> None:
+        if self._signed_in_uid:
+            QMessageBox.information(
+                self,
+                "Cloud only",
+                "Lists show only cloud documents. Use the mobile app or TCP transfer while signed in.",
+            )
+            return
         path, _ = QFileDialog.getOpenFileName(
             self,
             "Simulate Receive — select a PDF",
@@ -1053,16 +1402,57 @@ class MainWindow(QMainWindow):
             QMessageBox.information(
                 self,
                 "Document received",
-                f'"{doc.name}" was added successfully.',
+                f'"{doc.name}" was added (local only — sign in to use cloud lists).',
             )
         except Exception as exc:
             QMessageBox.critical(self, "Error", str(exc))
 
+    def _on_viewer_rename_title(self) -> None:
+        doc = self._viewer.current_document()
+        if not doc or not doc.cloud_doc_id:
+            QMessageBox.information(
+                self,
+                "Rename",
+                "Renaming is only available for cloud-synced documents.",
+            )
+            return
+        if not (self._sb_access_token and self._sb_url and self._sb_anon):
+            return
+        new_name, ok = QInputDialog.getText(
+            self,
+            "Document title",
+            "Display name:",
+            text=doc.name,
+        )
+        if not ok:
+            return
+        new_name = (new_name or "").strip()
+        if not new_name:
+            return
+        try:
+            client = SupabaseClient(url=self._sb_url, anon_key=self._sb_anon)
+            client.patch_document_file_name(
+                access_token=self._sb_access_token,
+                doc_id=doc.cloud_doc_id,
+                file_name=new_name,
+            )
+        except Exception as e:
+            QMessageBox.critical(self, "Rename failed", str(e))
+            return
+        self._manager.update_document_name(doc.id, new_name)
+        self._viewer.set_viewer_title(new_name)
+        self._refresh_lists()
+
     # ── helpers ────────────────────────────────────────────────────────────
 
     def _refresh_lists(self) -> None:
-        self._view_recent.set_documents(self._manager.get_recent())
-        self._view_all.set_documents(self._manager.get_all())
+        if self._signed_in_uid and self._sb_access_token:
+            recent = self._manager.get_recent_cloud()
+            all_docs = self._manager.get_all_cloud()
+        else:
+            recent, all_docs = [], []
+        self._view_recent.set_documents(recent)
+        self._view_all.set_documents(all_docs)
 
     def _start_pdf_receiver(self) -> None:
         base_dir = os.path.join(os.path.expanduser("~"), "ScanMeow")
@@ -1077,7 +1467,7 @@ class MainWindow(QMainWindow):
         self._pdf_receiver.pdf_received.connect(self._on_pdf_received)
         self._pdf_receiver.start()
 
-        self._firebase_user_sync = None
+        self._cloud_user_sync = None
         self._google_sign_in = None
         self._signed_in_uid = None
         self._set_auth_state(False, "")
@@ -1095,51 +1485,52 @@ class MainWindow(QMainWindow):
 
     def _sign_in_google(self) -> None:
         if self._signed_in_uid:
-            # Sign out UX toggle
-            if self._firebase_user_sync is not None:
+            if self._cloud_user_sync is not None:
                 try:
-                    self._firebase_user_sync.terminate()
+                    self._cloud_user_sync.terminate()
                 except Exception:
                     pass
-                self._firebase_user_sync = None
+                self._cloud_user_sync = None
             self._signed_in_uid = None
+            self._sb_access_token = None
+            self._sb_url = ""
+            self._sb_anon = ""
             self._set_auth_state(False, "")
             self._on_firebase_status("Signed out.")
+            self._refresh_lists()
             return
 
-        api_key = os.environ.get("FIREBASE_API_KEY", "").strip()
-        project_id = os.environ.get("FIREBASE_PROJECT_ID", "").strip()
-        storage_bucket = os.environ.get("FIREBASE_STORAGE_BUCKET", "").strip()
+        sb_url = os.environ.get("SUPABASE_URL", "").strip()
+        sb_anon = os.environ.get("SUPABASE_ANON_KEY", "").strip()
         client_id = os.environ.get("GOOGLE_OAUTH_CLIENT_ID", "").strip()
         client_secret = os.environ.get("GOOGLE_OAUTH_CLIENT_SECRET", "").strip()
 
-        if not (api_key and project_id and storage_bucket and client_id and client_secret):
+        if not (sb_url and sb_anon and client_id and client_secret):
             QMessageBox.information(
                 self,
                 "Missing config",
                 "Set env vars before signing in:\n"
-                "- FIREBASE_API_KEY\n"
-                "- FIREBASE_PROJECT_ID\n"
-                "- FIREBASE_STORAGE_BUCKET\n"
+                "- SUPABASE_URL\n"
+                "- SUPABASE_ANON_KEY\n"
                 "- GOOGLE_OAUTH_CLIENT_ID\n"
                 "- GOOGLE_OAUTH_CLIENT_SECRET\n",
             )
             return
 
         cfg = OAuthConfig(
-            firebase_api_key=api_key,
+            supabase_url=sb_url,
+            supabase_anon_key=sb_anon,
             google_client_id=client_id,
             google_client_secret=client_secret,
             redirect_port=8769,
         )
-        self._google_sign_in = GoogleFirebaseSignInThread(config=cfg, parent=self)
+        self._google_sign_in = GoogleSupabaseSignInThread(config=cfg, parent=self)
         self._google_sign_in.status.connect(self._on_firebase_status)
         self._google_sign_in.success.connect(
-            lambda token, uid, display_name, picture_url: self._start_firebase_user_sync(
-                api_key=api_key,
-                project_id=project_id,
-                storage_bucket=storage_bucket,
-                id_token=token,
+            lambda token, uid, display_name, picture_url: self._start_supabase_user_sync(
+                supabase_url=sb_url,
+                anon_key=sb_anon,
+                access_token=token,
                 uid=uid,
                 display_name=display_name,
                 picture_url=picture_url,
@@ -1148,47 +1539,145 @@ class MainWindow(QMainWindow):
         self._google_sign_in.failure.connect(lambda err: QMessageBox.critical(self, "Sign-in failed", err))
         self._google_sign_in.start()
 
-    def _start_firebase_user_sync(
+    def _start_supabase_user_sync(
         self,
         *,
-        api_key: str,
-        project_id: str,
-        storage_bucket: str,
-        id_token: str,
+        supabase_url: str,
+        anon_key: str,
+        access_token: str,
         uid: str,
         display_name: str,
         picture_url: str,
     ) -> None:
         base_dir = os.path.join(os.path.expanduser("~"), "ScanMeow")
-        inbox_dir = os.path.join(base_dir, "firebase_inbox")
+        inbox_dir = os.path.join(base_dir, "supabase_inbox")
         os.makedirs(inbox_dir, exist_ok=True)
 
-        if self._firebase_user_sync is not None:
+        if self._cloud_user_sync is not None:
             try:
-                self._firebase_user_sync.terminate()
+                self._cloud_user_sync.terminate()
             except Exception:
                 pass
 
-        self._firebase_user_sync = FirebaseUserSyncThread(
-            api_key=api_key,
-            project_id=project_id,
-            storage_bucket=storage_bucket,
-            id_token=id_token,
-            uid=uid,
+        self._sb_url = supabase_url
+        self._sb_anon = anon_key
+        self._sb_access_token = access_token
+
+        self._cloud_user_sync = SupabaseUserSyncThread(
+            supabase_url=supabase_url,
+            anon_key=anon_key,
+            access_token=access_token,
+            user_id=uid,
             inbox_dir=inbox_dir,
             poll_seconds=12,
+            document_manager=self._manager,
             parent=self,
         )
-        self._firebase_user_sync.status.connect(self._on_firebase_status)
-        self._firebase_user_sync.pdf_received.connect(self._on_pdf_received)
-        self._firebase_user_sync.start()
+        self._cloud_user_sync.status.connect(self._on_firebase_status)
+        self._cloud_user_sync.pdf_received.connect(self._on_pdf_received)
+        self._cloud_user_sync.names_updated.connect(self._refresh_lists)
+        self._cloud_user_sync.start()
         self._signed_in_uid = uid
         self._set_auth_state(True, display_name or uid, picture_url)
-        QMessageBox.information(self, "Signed in", "Desktop is now synced to your Firebase documents.")
+        self._bootstrap_supabase_to_local()
+        QMessageBox.information(self, "Signed in", "Desktop is now synced to your cloud documents.")
+
+    def _bootstrap_supabase_to_local(self, prefetched_docs=None) -> None:
+        if not self._signed_in_uid or not self._sb_access_token:
+            return
+        if not (self._sb_url and self._sb_anon):
+            return
+        client = SupabaseClient(url=self._sb_url, anon_key=self._sb_anon)
+        if prefetched_docs is None:
+            try:
+                docs = client.list_user_documents(
+                    access_token=self._sb_access_token, limit=100
+                )
+            except Exception as e:
+                self._on_firebase_status(f"Cloud list: {e}")
+                return
+        else:
+            docs = prefetched_docs
+        for d in docs:
+            if self._manager.has_cloud_doc(d.doc_id):
+                continue
+            try:
+                pdf_bytes = client.download_pdf(
+                    access_token=self._sb_access_token,
+                    storage_path=d.storage_path,
+                )
+                tmp = os.path.join(tempfile.gettempdir(), f"sm_bootstrap_{d.doc_id}.pdf")
+                with open(tmp, "wb") as f:
+                    f.write(pdf_bytes)
+                self._manager.add_from_file(
+                    tmp,
+                    d.doc_id,
+                    d.storage_path,
+                    display_name=d.file_name,
+                )
+                try:
+                    os.remove(tmp)
+                except OSError:
+                    pass
+            except Exception as ex:
+                self._on_firebase_status(f"Bootstrap skip {d.file_name}: {ex}")
+        self._refresh_lists()
+
+    def _refresh_cloud_manual(self) -> None:
+        """Pull list + names from Supabase now; fetch any PDFs not yet local."""
+        if not self._signed_in_uid or not self._sb_access_token:
+            self._on_firebase_status("Sign in to refresh the cloud list.")
+            return
+        if not (self._sb_url and self._sb_anon):
+            return
+        self._on_firebase_status("Refreshing cloud…")
+        client = SupabaseClient(url=self._sb_url, anon_key=self._sb_anon)
+        try:
+            docs = client.list_user_documents(
+                access_token=self._sb_access_token, limit=100
+            )
+        except Exception as e:
+            self._on_firebase_status(f"Cloud refresh failed: {e}")
+            return
+        pairs = [(d.doc_id, d.file_name) for d in docs]
+        self._manager.sync_cloud_file_names_from_pairs(pairs)
+        self._bootstrap_supabase_to_local(prefetched_docs=docs)
+        self._on_firebase_status("Cloud list updated.")
+
+    def _on_delete_selected_docs(self, docs) -> None:
+        if not docs:
+            return
+        r = QMessageBox.question(
+            self,
+            "Delete documents",
+            f"Delete {len(docs)} document(s)? This cannot be undone.",
+            QMessageBox.Yes | QMessageBox.No,
+            QMessageBox.No,
+        )
+        if r != QMessageBox.Yes:
+            return
+        client = None
+        if self._sb_access_token and self._sb_url and self._sb_anon:
+            client = SupabaseClient(url=self._sb_url, anon_key=self._sb_anon)
+        for d in docs:
+            if client and d.cloud_doc_id and d.cloud_storage_path:
+                try:
+                    client.delete_document(
+                        access_token=self._sb_access_token,
+                        doc_id=d.cloud_doc_id,
+                        storage_path=d.cloud_storage_path,
+                    )
+                except Exception as e:
+                    self._on_firebase_status(f"Cloud delete failed ({d.name}): {e}")
+            try:
+                self._manager.delete(d.id)
+            except Exception:
+                pass
+        self._refresh_lists()
 
     def closeEvent(self, event: QCloseEvent) -> None:
         # Stop background threads to avoid "QThread: Destroyed while thread is still running"
-        for th_attr in ("_firebase_user_sync", "_google_sign_in", "_pdf_receiver"):
+        for th_attr in ("_cloud_user_sync", "_google_sign_in", "_pdf_receiver"):
             th = getattr(self, th_attr, None)
             if th is not None and th.isRunning():
                 try:
@@ -1198,9 +1687,20 @@ class MainWindow(QMainWindow):
                     pass
         super().closeEvent(event)
 
-    def _on_pdf_received(self, pdf_path: str) -> None:
+    def _on_pdf_received(
+        self,
+        pdf_path: str,
+        cloud_doc_id: str = "",
+        cloud_storage_path: str = "",
+        display_name: str = "",
+    ) -> None:
         try:
-            doc = self._manager.add_from_file(pdf_path)
+            doc = self._manager.add_from_file(
+                pdf_path,
+                cloud_doc_id or None,
+                cloud_storage_path or None,
+                display_name=display_name or None,
+            )
             # inbox is just a staging area; managed storage already has the file
             try:
                 os.remove(pdf_path)
@@ -1217,21 +1717,17 @@ class MainWindow(QMainWindow):
 
 
 class PdfReceiver(QThread):
-    pdf_received = pyqtSignal(str)
+    pdf_received = pyqtSignal(str, str, str, str)
 
     def __init__(self, *, port: int, inbox_dir: str, parent=None):
         super().__init__(parent)
         self._port = port
         self._inbox_dir = inbox_dir
-        self._uploader = None  # set if Firebase service account is configured
-
-        service_account_json = os.environ.get("FIREBASE_SERVICE_ACCOUNT_JSON", "").strip()
-        storage_bucket = os.environ.get("FIREBASE_STORAGE_BUCKET", "").strip()
-        if service_account_json and storage_bucket:
-            self._uploader = FirebaseAdminUploader(
-                service_account_json=service_account_json,
-                storage_bucket=storage_bucket,
-            )
+        self._supabase: Optional[SupabaseClient] = None
+        sb_url = os.environ.get("SUPABASE_URL", "").strip()
+        sb_anon = os.environ.get("SUPABASE_ANON_KEY", "").strip()
+        if sb_url and sb_anon:
+            self._supabase = SupabaseClient(url=sb_url, anon_key=sb_anon)
 
     def run(self) -> None:
         import socket
@@ -1260,10 +1756,10 @@ class PdfReceiver(QThread):
                 name_len = int.from_bytes(recv_exact(conn, 2), "big", signed=False)
                 file_name = recv_exact(conn, name_len).decode("utf-8", errors="ignore")
 
-                firebase_id_token = None
+                access_token = None
                 if magic == b"SMK2":
                     token_len = int.from_bytes(recv_exact(conn, 2), "big", signed=False)
-                    firebase_id_token = recv_exact(conn, token_len).decode("utf-8", errors="ignore")
+                    access_token = recv_exact(conn, token_len).decode("utf-8", errors="ignore")
 
                 file_size = int.from_bytes(recv_exact(conn, 8), "big", signed=False)
 
@@ -1292,18 +1788,40 @@ class PdfReceiver(QThread):
                         f.write(chunk)
                         remaining -= len(chunk)
 
-                # Optional: upload to Firebase (ownership per user) if we have a valid ID token
-                if firebase_id_token and self._uploader is not None:
+                cloud_doc_id = ""
+                cloud_storage_path = ""
+                if access_token and self._supabase is not None:
                     try:
                         with open(out_path, "rb") as f:
                             pdf_bytes = f.read()
-                        self._uploader.upload_pdf_from_id_token(
-                            id_token=firebase_id_token,
-                            pdf_bytes=pdf_bytes,
-                            original_file_name=file_name,
+                        # Mobile may have already uploaded this PDF; avoid duplicate cloud rows.
+                        min_ms = int(time.time() * 1000) - 25 * 60 * 1000
+                        existing = self._supabase.find_recent_document_by_file_name(
+                            access_token=access_token,
+                            file_name=file_name,
+                            min_created_at_millis=min_ms,
                         )
-                    except Exception:
-                        # If Firebase is not configured correctly, we still keep the local file
-                        pass
+                        if existing is not None:
+                            cloud_doc_id, cloud_storage_path = (
+                                existing.doc_id,
+                                existing.storage_path,
+                            )
+                        else:
+                            cloud_doc_id, cloud_storage_path = self._supabase.upload_pdf_and_row(
+                                access_token=access_token,
+                                pdf_bytes=pdf_bytes,
+                                original_file_name=file_name,
+                            )
+                    except Exception as ex:
+                        import traceback
 
-                self.pdf_received.emit(out_path)
+                        traceback.print_exc()
+                        # Token invalid, RLS, or SUPABASE_* missing in env → row id stays empty
+                        print(f"ScanMeow TCP upload/metadata failed: {ex}", flush=True)
+
+                self.pdf_received.emit(
+                    out_path,
+                    cloud_doc_id or "",
+                    cloud_storage_path or "",
+                    file_name,
+                )

@@ -6,7 +6,7 @@ import time
 import urllib.parse
 import webbrowser
 from dataclasses import dataclass
-from typing import Optional, Tuple
+from typing import Tuple
 
 import requests
 from PyQt5.QtCore import QThread, pyqtSignal
@@ -14,19 +14,20 @@ from PyQt5.QtCore import QThread, pyqtSignal
 
 @dataclass(frozen=True)
 class OAuthConfig:
-    firebase_api_key: str
+    supabase_url: str
+    supabase_anon_key: str
     google_client_id: str
     google_client_secret: str
     redirect_port: int = 8769
 
 
-class GoogleFirebaseSignInThread(QThread):
+class GoogleSupabaseSignInThread(QThread):
     """
-    Desktop OAuth (browser) -> Google ID token -> Firebase signInWithIdp -> Firebase idToken + uid.
+    Desktop OAuth (browser) -> Google ID token -> Supabase auth (id_token grant).
     """
 
     status = pyqtSignal(str)
-    success = pyqtSignal(str, str, str, str)  # firebase_id_token, uid, display_name, picture_url
+    success = pyqtSignal(str, str, str, str)  # access_token, user_uuid, display_name, picture_url
     failure = pyqtSignal(str)
 
     def __init__(self, *, config: OAuthConfig, parent=None):
@@ -35,8 +36,8 @@ class GoogleFirebaseSignInThread(QThread):
 
     def run(self) -> None:
         try:
-            firebase_id_token, uid, display_name, picture_url = self._sign_in()
-            self.success.emit(firebase_id_token, uid, display_name, picture_url)
+            access_token, uid, display_name, picture_url = self._sign_in()
+            self.success.emit(access_token, uid, display_name, picture_url)
         except Exception as e:
             self.failure.emit(str(e))
 
@@ -44,7 +45,6 @@ class GoogleFirebaseSignInThread(QThread):
         redirect_uri = f"http://127.0.0.1:{self._cfg.redirect_port}/callback"
         state = secrets.token_urlsafe(24)
 
-        # Start localhost receiver for OAuth callback.
         code_box = {"code": None, "state": None, "error": None}
         done = threading.Event()
 
@@ -71,7 +71,7 @@ class GoogleFirebaseSignInThread(QThread):
                 finally:
                     done.set()
 
-            def log_message(self, *_args, **_kwargs):  # silence
+            def log_message(self, *_args, **_kwargs):
                 return
 
         self.status.emit("Desktop: opening Google sign-in…")
@@ -106,7 +106,6 @@ class GoogleFirebaseSignInThread(QThread):
         if not code_box["code"]:
             raise RuntimeError("Missing OAuth code.")
 
-        # Exchange code -> tokens (Google).
         self.status.emit("Desktop: exchanging code…")
         token_url = "https://oauth2.googleapis.com/token"
         token_payload = {
@@ -117,53 +116,50 @@ class GoogleFirebaseSignInThread(QThread):
             "grant_type": "authorization_code",
         }
         r = requests.post(token_url, data=token_payload, timeout=30)
-        r.raise_for_status()
+        if not r.ok:
+            raise RuntimeError(
+                f"Google token exchange HTTP {r.status_code}: {r.text or r.reason}. "
+                "Verifică Web Client ID/Secret, redirect http://127.0.0.1:8769/callback în Google Cloud."
+            )
         tokens = r.json()
         google_id_token = tokens.get("id_token")
         if not google_id_token:
             raise RuntimeError("Google token exchange did not return id_token.")
-        display_name, picture_url = self._extract_profile_from_jwt(google_id_token)
+        display_name, picture_url = _extract_profile_from_jwt(google_id_token)
 
-        # Exchange Google ID token -> Firebase session (idToken + localId).
-        self.status.emit("Desktop: signing into Firebase…")
-        fb_url = (
-            "https://identitytoolkit.googleapis.com/v1/accounts:signInWithIdp"
-            f"?key={self._cfg.firebase_api_key}"
+        self.status.emit("Desktop: signing into Supabase…")
+        sb_url = f"{self._cfg.supabase_url.rstrip('/')}/auth/v1/token?grant_type=id_token"
+        r2 = requests.post(
+            sb_url,
+            headers={
+                "apikey": self._cfg.supabase_anon_key,
+                "Content-Type": "application/json",
+            },
+            json={"provider": "google", "id_token": google_id_token},
+            timeout=30,
         )
-        fb_payload = {
-            "postBody": f"id_token={google_id_token}&providerId=google.com",
-            "requestUri": redirect_uri,
-            "returnIdpCredential": True,
-            "returnSecureToken": True,
-        }
-        r2 = requests.post(fb_url, json=fb_payload, timeout=30)
         r2.raise_for_status()
-        fb = r2.json()
-        firebase_id_token = fb.get("idToken")
-        uid = fb.get("localId")
-        if not firebase_id_token or not uid:
-            raise RuntimeError("Firebase sign-in did not return idToken/localId.")
-        return firebase_id_token, uid, display_name, picture_url
+        data = r2.json()
+        access_token = data.get("access_token")
+        user = data.get("user") or {}
+        uid = user.get("id")
+        if not access_token or not uid:
+            raise RuntimeError("Supabase sign-in did not return access_token/user id.")
+        return str(access_token), str(uid), display_name, picture_url
 
-    @staticmethod
-    def _extract_profile_from_jwt(jwt_token: str) -> Tuple[str, str]:
-        """
-        Parse unsigned JWT payload for UI hints (name/picture)
-        This is used only for display, not authorization decisions
-        """
-        parts = jwt_token.split(".")
-        if len(parts) < 2:
-            return "", ""
-        payload_b64 = parts[1]
-        # base64url padding
-        payload_b64 += "=" * ((4 - len(payload_b64) % 4) % 4)
-        try:
-            import base64
 
-            payload = json.loads(base64.urlsafe_b64decode(payload_b64.encode("utf-8")).decode("utf-8"))
-            name = payload.get("name", "") or ""
-            picture = payload.get("picture", "") or ""
-            return name, picture
-        except Exception:
-            return "", ""
+def _extract_profile_from_jwt(jwt_token: str) -> Tuple[str, str]:
+    parts = jwt_token.split(".")
+    if len(parts) < 2:
+        return "", ""
+    payload_b64 = parts[1]
+    payload_b64 += "=" * ((4 - len(payload_b64) % 4) % 4)
+    try:
+        import base64
 
+        payload = json.loads(base64.urlsafe_b64decode(payload_b64.encode("utf-8")).decode("utf-8"))
+        name = payload.get("name", "") or ""
+        picture = payload.get("picture", "") or ""
+        return name, picture
+    except Exception:
+        return "", ""
