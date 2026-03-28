@@ -7,11 +7,16 @@ import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Share
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
+import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
@@ -21,17 +26,20 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.unit.dp
+import com.project.scanmeow.R
 import com.project.scanmeow.ui.theme.ScanBlue
 
 @Composable
 fun ScanResultScreen(
     scannedJpeg: ByteArray,
     onCancel: () -> Unit,
+    onSave: () -> Unit,
     onShare: () -> Unit,
     modifier: Modifier = Modifier,
     cancelLabel: String = "Cancel",
-    shareLabel: String = "Share",
+    saveLabel: String = "Save",
 ) {
     val bitmap = remember(scannedJpeg) {
         BitmapFactory.decodeByteArray(scannedJpeg, 0, scannedJpeg.size)
@@ -42,6 +50,21 @@ fun ScanResultScreen(
             .fillMaxSize()
             .background(MaterialTheme.colorScheme.background),
     ) {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 8.dp, vertical = 4.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Spacer(modifier = Modifier.weight(1f))
+            IconButton(onClick = onShare) {
+                Icon(
+                    imageVector = Icons.Filled.Share,
+                    contentDescription = stringResource(R.string.content_desc_share_scan),
+                    tint = MaterialTheme.colorScheme.primary,
+                )
+            }
+        }
         Box(
             modifier = Modifier
                 .weight(1f)
@@ -78,7 +101,7 @@ fun ScanResultScreen(
                 Text(cancelLabel)
             }
             Button(
-                onClick = onShare,
+                onClick = onSave,
                 modifier = Modifier.weight(1f),
                 colors = ButtonDefaults.buttonColors(
                     containerColor = ScanBlue,
@@ -86,7 +109,7 @@ fun ScanResultScreen(
                 ),
                 shape = MaterialTheme.shapes.medium,
             ) {
-                Text(shareLabel)
+                Text(saveLabel)
             }
         }
     }

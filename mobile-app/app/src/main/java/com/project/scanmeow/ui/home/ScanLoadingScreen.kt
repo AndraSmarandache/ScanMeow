@@ -14,6 +14,7 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
@@ -101,13 +102,21 @@ private fun DocumentScanAnimation(modifier: Modifier = Modifier) {
 fun ScanLoadingScreen(
     message: String,
     modifier: Modifier = Modifier,
+    showDocumentScanAnimation: Boolean = true,
 ) {
     Box(
         modifier = modifier.fillMaxSize(),
         contentAlignment = Alignment.Center,
     ) {
         Column(horizontalAlignment = Alignment.CenterHorizontally) {
-            DocumentScanAnimation()
+            if (showDocumentScanAnimation) {
+                DocumentScanAnimation()
+            } else {
+                CircularProgressIndicator(
+                    modifier = Modifier.size(48.dp),
+                    color = ScanBlue,
+                )
+            }
             Spacer(Modifier.height(28.dp))
             Text(
                 text = message,

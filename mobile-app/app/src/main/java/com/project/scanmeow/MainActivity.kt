@@ -1,9 +1,10 @@
 package com.project.scanmeow
 
+import android.app.Activity
+import android.content.Intent
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
 import android.graphics.Color as AndroidColor
-import android.app.Activity
 import android.os.Bundle
 import android.graphics.RectF
 import android.graphics.pdf.PdfDocument
@@ -20,6 +21,7 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.size
@@ -27,8 +29,10 @@ import androidx.compose.foundation.Image
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.Text
+import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
@@ -36,6 +40,7 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.Surface
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.mutableIntStateOf
@@ -53,19 +58,23 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.ui.draw.clip
+import coil3.compose.AsyncImage
 import com.google.android.gms.auth.api.signin.GoogleSignIn
 import com.google.android.gms.auth.api.signin.GoogleSignInOptions
 import com.google.android.gms.common.api.ApiException
-import com.google.firebase.auth.FirebaseAuth
-import com.google.firebase.auth.GoogleAuthProvider
-import coil3.compose.AsyncImage
+import com.project.scanmeow.BuildConfig
+import com.project.scanmeow.data.SupabaseDocumentsRepository
+import com.project.scanmeow.data.UserCloudDocument
+import com.project.scanmeow.data.supabaseSignInWithGoogleIdToken
 import com.project.scanmeow.ui.home.MainHomeScreen
+import com.project.scanmeow.ui.home.PdfViewerScreen
 import com.project.scanmeow.ui.home.ScanAlignedReviewScreen
 import com.project.scanmeow.ui.home.ScanLoadingScreen
 import com.project.scanmeow.ui.home.ScanResultScreen
 import com.project.scanmeow.ui.theme.ScanMeowTheme
 import java.io.ByteArrayOutputStream
 import java.io.DataOutputStream
+import java.io.File
 import java.net.Socket
 import java.util.concurrent.TimeUnit
 import kotlinx.coroutines.Dispatchers
@@ -104,80 +113,101 @@ class MainActivity : ComponentActivity() {
                     .build()
             }
 
-            // ── Firebase Google Sign-In ────────────────────────────────────────
-            val firebaseAuth = remember { FirebaseAuth.getInstance() }
-            var firebaseUid by remember { mutableStateOf(firebaseAuth.currentUser?.uid) }
-            var firebaseIdToken by remember { mutableStateOf<String?>(null) }
-            var firebaseEmail by remember { mutableStateOf(firebaseAuth.currentUser?.email) }
-            var firebaseDisplayName by remember { mutableStateOf(firebaseAuth.currentUser?.displayName) }
-            var firebasePhotoUrl by remember { mutableStateOf(firebaseAuth.currentUser?.photoUrl?.toString()) }
+            // ── Google → Supabase session (JWT in accessToken) ───────────────────
+            var supabaseUserId by remember { mutableStateOf<String?>(null) }
+            var supabaseAccessToken by remember { mutableStateOf<String?>(null) }
+            var googleEmail by remember { mutableStateOf<String?>(null) }
+            var googleDisplayName by remember { mutableStateOf<String?>(null) }
+            var googlePhotoUrl by remember { mutableStateOf<String?>(null) }
             var avatarLoadFailed by remember { mutableStateOf(false) }
 
-            val defaultWebClientId = remember {
-                val resId = context.resources.getIdentifier(
-                    "default_web_client_id",
-                    "string",
-                    context.packageName,
-                )
-                if (resId != 0) context.getString(resId) else ""
-            }
-
-            val signInClient = remember(defaultWebClientId) {
-                if (defaultWebClientId.isBlank()) {
-                    null
-                } else {
+            val webClientId = remember { BuildConfig.GOOGLE_WEB_CLIENT_ID.trim() }
+            val webClientIdLooksInvalid =
+                webClientId.isBlank() ||
+                    webClientId.contains("xxxxx", ignoreCase = true) ||
+                    webClientId.contains("your_", ignoreCase = true) ||
+                    !webClientId.endsWith(".apps.googleusercontent.com")
+            val signInClient = remember(webClientId) {
+                if (webClientIdLooksInvalid) null
+                else {
                     val options = GoogleSignInOptions.Builder()
-                        .requestIdToken(defaultWebClientId)
+                        .requestIdToken(webClientId)
                         .requestEmail()
                         .build()
                     GoogleSignIn.getClient(context, options)
                 }
             }
 
-            LaunchedEffect(firebaseUid) {
-                if (firebaseIdToken == null && firebaseAuth.currentUser != null) {
-                    firebaseAuth.currentUser
-                        ?.getIdToken(true)
-                        ?.addOnSuccessListener { result -> firebaseIdToken = result.token }
-                }
-            }
-
             val signInLauncher = rememberLauncherForActivityResult(
                 contract = ActivityResultContracts.StartActivityForResult(),
             ) { activityResult ->
-                if (activityResult.resultCode != Activity.RESULT_OK) return@rememberLauncherForActivityResult
-                val data = activityResult.data ?: return@rememberLauncherForActivityResult
+                val data = activityResult.data
+                if (activityResult.resultCode != Activity.RESULT_OK) {
+                    val hint = when (activityResult.resultCode) {
+                        Activity.RESULT_CANCELED -> buildString {
+                            append("Sign-in canceled (code 0). Common causes: ")
+                            append("1) emulator without Google Play or without a Google account in Settings; ")
+                            append("2) back was pressed; ")
+                            append("3) missing OAuth Android client for package ")
+                            append(context.packageName)
+                            append(" + debug SHA-1 in Google Cloud (UI may close immediately). ")
+                            append("Rebuild after saving SHA-1.")
+                        }
+                        else -> "Google sign-in failed (code ${activityResult.resultCode}). Check Web Client ID, Android client, and SHA-1."
+                    }
+                    Toast.makeText(context, hint, Toast.LENGTH_LONG).show()
+                    return@rememberLauncherForActivityResult
+                }
+                if (data == null) {
+                    Toast.makeText(context, "Google sign-in: empty response.", Toast.LENGTH_SHORT).show()
+                    return@rememberLauncherForActivityResult
+                }
                 val task = GoogleSignIn.getSignedInAccountFromIntent(data)
                 try {
                     val account = task.getResult(ApiException::class.java)
                     val googleIdToken = account.idToken
                     if (googleIdToken.isNullOrBlank()) {
-                        Toast.makeText(context, "Missing Google idToken.", Toast.LENGTH_LONG).show()
+                        Toast.makeText(
+                            context,
+                            "Missing Google idToken. Verify Web Client ID and SHA-1.",
+                            Toast.LENGTH_LONG,
+                        ).show()
                         return@rememberLauncherForActivityResult
                     }
-                    val credential = GoogleAuthProvider.getCredential(googleIdToken, null)
-                    firebaseAuth.signInWithCredential(credential)
-                        .addOnSuccessListener { authResult ->
-                            firebaseUid = authResult.user?.uid
-                            firebaseEmail = authResult.user?.email
-                            firebaseDisplayName = authResult.user?.displayName
-                            firebasePhotoUrl = authResult.user?.photoUrl?.toString()
-                            avatarLoadFailed = false
-                            authResult.user
-                                ?.getIdToken(true)
-                                ?.addOnSuccessListener { result -> firebaseIdToken = result.token }
+                    googleEmail = account.email
+                    googleDisplayName = account.displayName
+                    googlePhotoUrl = account.photoUrl?.toString()
+                    avatarLoadFailed = false
+                    scope.launch {
+                        val result = runCatching {
+                            supabaseSignInWithGoogleIdToken(http, googleIdToken)
                         }
-                        .addOnFailureListener { e ->
-                            Toast.makeText(context, "Firebase sign-in failed: ${e.message}", Toast.LENGTH_LONG).show()
+                        result.onSuccess { pair ->
+                            supabaseAccessToken = pair.first
+                            supabaseUserId = pair.second
+                        }.onFailure { e ->
+                            withContext(Dispatchers.Main) {
+                                Toast.makeText(context, "Supabase: ${e.message}", Toast.LENGTH_LONG).show()
+                            }
                         }
+                    }
                 } catch (e: ApiException) {
-                    Toast.makeText(context, "Google sign-in failed: ${e.message}", Toast.LENGTH_LONG).show()
+                    val code = e.statusCode
+                    val detail = when (code) {
+                        10 -> "DEVELOPER_ERROR (10): missing or incorrect Android OAuth client (package + SHA-1) in Google Cloud."
+                        12501 -> "User canceled."
+                        else -> e.message ?: "unknown"
+                    }
+                    Toast.makeText(
+                        context,
+                        "Google: $detail (code $code)",
+                        Toast.LENGTH_LONG,
+                    ).show()
                 }
             }
 
             ScanMeowTheme {
-                if (firebaseIdToken == null || firebaseUid == null) {
-                    // Sign-in gate shown only when no valid Firebase session
+                if (supabaseAccessToken.isNullOrBlank() || supabaseUserId.isNullOrBlank()) {
                     Box(
                         modifier = Modifier.fillMaxSize(),
                         contentAlignment = Alignment.Center,
@@ -188,19 +218,33 @@ class MainActivity : ComponentActivity() {
                             modifier = Modifier.padding(24.dp),
                         ) {
                             Text(text = "Sign in with Google", style = MaterialTheme.typography.bodyLarge)
-                            Spacer(Modifier.padding(top = 0.dp))
                             Button(
                                 onClick = {
-                                    if (signInClient == null) {
+                                    if (BuildConfig.SUPABASE_URL.isBlank() || BuildConfig.SUPABASE_ANON_KEY.isBlank()) {
                                         Toast.makeText(
                                             context,
-                                            "Missing google-services.json (default_web_client_id not found).",
+                                            "Set supabase.url and supabase.anon.key in local.properties.",
                                             Toast.LENGTH_LONG,
                                         ).show()
                                         return@Button
                                     }
-                                    val intent = signInClient.signInIntent
-                                    signInLauncher.launch(intent)
+                                    if (signInClient == null) {
+                                        Toast.makeText(
+                                            context,
+                                            if (webClientIdLooksInvalid) {
+                                                "In local.properties, google.web.client.id must be a real Web Client ID, " +
+                                                    "not a placeholder. Find it in Google Cloud Credentials or old google-services.json (client_type 3)."
+                                            } else {
+                                                "Set google.web.client.id in local.properties."
+                                            },
+                                            Toast.LENGTH_LONG,
+                                        ).show()
+                                        return@Button
+                                    }
+                                    // Clear prior session so the account picker shows reliably.
+                                    signInClient.signOut().addOnCompleteListener {
+                                        signInLauncher.launch(signInClient.signInIntent)
+                                    }
                                 },
                                 modifier = Modifier.padding(top = 16.dp),
                             ) {
@@ -212,19 +256,49 @@ class MainActivity : ComponentActivity() {
                     var screen by remember { mutableStateOf<AppScreen>(AppScreen.Home) }
                     var sourceDrawableId by remember { mutableIntStateOf(0) }
                     var accountMenuExpanded by remember { mutableStateOf(false) }
+                    var cloudDocs by remember { mutableStateOf<List<UserCloudDocument>>(emptyList()) }
+                    val cloudRepo = remember { SupabaseDocumentsRepository(http) }
+                    var bluetoothPcMode by remember { mutableStateOf(false) }
+                    var recentDocsExpanded by remember { mutableStateOf(false) }
 
+                    LaunchedEffect(supabaseAccessToken, supabaseUserId) {
+                        cloudRepo.accessToken = supabaseAccessToken
+                        val uid = supabaseUserId ?: return@LaunchedEffect
+                        runCatching {
+                            cloudDocs = cloudRepo.fetchDocumentsFromServer(uid)
+                        }
+                    }
+
+                    DisposableEffect(supabaseUserId, supabaseAccessToken) {
+                        cloudRepo.accessToken = supabaseAccessToken
+                        val uid = supabaseUserId
+                        if (uid.isNullOrBlank()) {
+                            return@DisposableEffect onDispose { }
+                        }
+                        val reg = cloudRepo.attachListener(scope, uid) { cloudDocs = it }
+                        onDispose { reg.remove() }
+                    }
+
+                    Box(Modifier.fillMaxSize()) {
                     Scaffold(
                         modifier = Modifier.fillMaxSize(),
                         topBar = {
                             Row(
                                 modifier = Modifier
                                     .fillMaxWidth()
+                                    .statusBarsPadding()
                                     .padding(horizontal = 8.dp)
-                                    .padding(top = 20.dp, bottom = 0.dp),
+                                    .padding(bottom = 4.dp),
                                 horizontalArrangement = Arrangement.SpaceBetween,
                                 verticalAlignment = Alignment.CenterVertically,
                             ) {
-                                if (screen is AppScreen.AlignedReview) {
+                                val showBack = when (screen) {
+                                    is AppScreen.AlignedReview,
+                                    is AppScreen.PdfViewer,
+                                    -> true
+                                    else -> false
+                                }
+                                if (showBack) {
                                     IconButton(onClick = { screen = AppScreen.Home }) {
                                         Icon(
                                             imageVector = Icons.AutoMirrored.Filled.ArrowBack,
@@ -238,11 +312,10 @@ class MainActivity : ComponentActivity() {
                                 Box {
                                     IconButton(
                                         onClick = { accountMenuExpanded = true },
-                                        modifier = Modifier.padding(top = 8.dp),
                                     ) {
-                                        val showFallback = firebasePhotoUrl.isNullOrBlank() || avatarLoadFailed
+                                        val showFallback = googlePhotoUrl.isNullOrBlank() || avatarLoadFailed
                                         if (showFallback) {
-                                            val initial = (firebaseDisplayName ?: firebaseEmail ?: "")
+                                            val initial = (googleDisplayName ?: googleEmail ?: "")
                                                 .trim()
                                                 .firstOrNull()
                                                 ?.uppercaseChar()
@@ -263,7 +336,7 @@ class MainActivity : ComponentActivity() {
                                             }
                                         } else {
                                             AsyncImage(
-                                                model = firebasePhotoUrl,
+                                                model = googlePhotoUrl,
                                                 contentDescription = "Account menu",
                                                 modifier = Modifier
                                                     .size(30.dp)
@@ -276,8 +349,8 @@ class MainActivity : ComponentActivity() {
                                         expanded = accountMenuExpanded,
                                         onDismissRequest = { accountMenuExpanded = false },
                                     ) {
-                                        val displayName = firebaseDisplayName?.takeIf { it.isNotBlank() }
-                                        val email = firebaseEmail?.takeIf { it.isNotBlank() }
+                                        val displayName = googleDisplayName?.takeIf { it.isNotBlank() }
+                                        val email = googleEmail?.takeIf { it.isNotBlank() }
                                         if (displayName != null) {
                                             DropdownMenuItem(
                                                 text = { Text(displayName) },
@@ -296,14 +369,14 @@ class MainActivity : ComponentActivity() {
                                             text = { Text("Sign out", color = Color(0xFFD32F2F)) },
                                             onClick = {
                                                 accountMenuExpanded = false
-                                                firebaseAuth.signOut()
                                                 signInClient?.signOut()
-                                                firebaseUid = null
-                                                firebaseEmail = null
-                                                firebaseDisplayName = null
-                                                firebasePhotoUrl = null
+                                                supabaseUserId = null
+                                                supabaseAccessToken = null
+                                                googleEmail = null
+                                                googleDisplayName = null
+                                                googlePhotoUrl = null
                                                 avatarLoadFailed = false
-                                                firebaseIdToken = null
+                                                cloudRepo.accessToken = null
                                             },
                                         )
                                     }
@@ -314,6 +387,73 @@ class MainActivity : ComponentActivity() {
                         when (val s = screen) {
                             AppScreen.Home -> MainHomeScreen(
                                 modifier = Modifier.padding(innerPadding),
+                                cloudDocuments = cloudDocs,
+                                recentDocumentsExpanded = recentDocsExpanded,
+                                onToggleRecentDocumentsExpanded = {
+                                    recentDocsExpanded = !recentDocsExpanded
+                                },
+                                bluetoothModeForPc = bluetoothPcMode,
+                                onBluetoothModeChange = { bluetoothPcMode = it },
+                                onShareCloudDocuments = { docs ->
+                                    if (docs.isEmpty()) return@MainHomeScreen
+                                    val token = supabaseAccessToken
+                                    if (token.isNullOrBlank()) {
+                                        Toast.makeText(context, "Not signed in.", Toast.LENGTH_LONG).show()
+                                        return@MainHomeScreen
+                                    }
+                                    runCatching {
+                                        withContext(Dispatchers.IO) {
+                                            for (d in docs) {
+                                                val f = File(
+                                                    context.cacheDir,
+                                                    "desk_${d.docId}_${System.currentTimeMillis()}.pdf",
+                                                )
+                                                cloudRepo.downloadPdfToFile(d, f)
+                                                val bytes = f.readBytes()
+                                                runCatching { f.delete() }
+                                                var fn = d.fileName.trim()
+                                                    .ifBlank { "scanmeow_${d.docId}.pdf" }
+                                                    .replace("/", "_")
+                                                if (!fn.endsWith(".pdf", ignoreCase = true)) {
+                                                    fn = "$fn.pdf"
+                                                }
+                                                sendPdfToDesktop(bytes, fn, token)
+                                            }
+                                        }
+                                    }.onSuccess {
+                                        Toast.makeText(
+                                            context,
+                                            if (docs.size == 1) {
+                                                context.getString(R.string.toast_sent_to_pc)
+                                            } else {
+                                                context.getString(R.string.toast_sent_n_to_pc, docs.size)
+                                            },
+                                            Toast.LENGTH_SHORT,
+                                        ).show()
+                                    }.onFailure { e ->
+                                        Toast.makeText(
+                                            context,
+                                            e.message ?: "TCP send failed",
+                                            Toast.LENGTH_LONG,
+                                        ).show()
+                                    }
+                                },
+                                onDeleteCloudDocuments = { docs ->
+                                    val uid = supabaseUserId
+                                        ?: throw IllegalStateException("Not signed in")
+                                    withContext(Dispatchers.IO) {
+                                        for (d in docs) {
+                                            cloudRepo.deleteDocument(uid, d)
+                                        }
+                                    }
+                                    withContext(Dispatchers.Main) {
+                                        Toast.makeText(
+                                            context,
+                                            context.getString(R.string.action_delete),
+                                            Toast.LENGTH_SHORT,
+                                        ).show()
+                                    }
+                                },
                                 onScanDocumentClick = { drawableId ->
                                     if (drawableId == 0) {
                                         Toast.makeText(
@@ -350,7 +490,109 @@ class MainActivity : ComponentActivity() {
                                         }
                                     }
                                 },
+                                onDocumentClick = {
+                                    screen = AppScreen.PdfViewer(it)
+                                },
                             )
+
+                            is AppScreen.PdfViewer -> {
+                                var viewerDoc by remember(s.doc.docId) { mutableStateOf(s.doc) }
+                                LaunchedEffect(s.doc.docId) {
+                                    viewerDoc = s.doc
+                                }
+                                var pdfRenameOpen by remember { mutableStateOf(false) }
+                                var pdfRenameText by remember { mutableStateOf("") }
+
+                                var pdfFile by remember(s.doc.docId) { mutableStateOf<File?>(null) }
+                                var pdfErr by remember(s.doc.docId) { mutableStateOf(false) }
+                                LaunchedEffect(s.doc.docId, s.doc.storagePath) {
+                                    pdfErr = false
+                                    val f = File(context.cacheDir, "view_${s.doc.docId}.pdf")
+                                    val meta = File(context.cacheDir, "view_${s.doc.docId}.meta")
+                                    val cachedPath = if (meta.exists()) meta.readText() else ""
+                                    if (
+                                        f.exists() && f.length() > 0L &&
+                                        cachedPath == s.doc.storagePath
+                                    ) {
+                                        pdfFile = f
+                                        return@LaunchedEffect
+                                    }
+                                    pdfFile = null
+                                    runCatching {
+                                        cloudRepo.downloadPdfToFile(s.doc, f)
+                                        meta.writeText(s.doc.storagePath)
+                                        pdfFile = f
+                                    }.onFailure { pdfErr = true }
+                                }
+                                Box(Modifier.padding(innerPadding)) {
+                                    when {
+                                        pdfErr -> Column(Modifier.fillMaxSize()) {
+                                            Text(stringResource(R.string.pdf_viewer_error))
+                                        }
+                                        pdfFile != null -> PdfViewerScreen(
+                                            pdfFile = pdfFile!!,
+                                            title = viewerDoc.fileName,
+                                            onTitleLongPress = {
+                                                pdfRenameText = viewerDoc.fileName
+                                                pdfRenameOpen = true
+                                            },
+                                            modifier = Modifier.fillMaxSize(),
+                                        )
+                                        else -> ScanLoadingScreen(
+                                            message = stringResource(R.string.pdf_loading),
+                                            modifier = Modifier.fillMaxSize(),
+                                            showDocumentScanAnimation = false,
+                                        )
+                                    }
+                                    if (pdfRenameOpen) {
+                                        AlertDialog(
+                                            onDismissRequest = { pdfRenameOpen = false },
+                                            title = { Text(stringResource(R.string.pdf_rename_title)) },
+                                            text = {
+                                                OutlinedTextField(
+                                                    value = pdfRenameText,
+                                                    onValueChange = { pdfRenameText = it },
+                                                    singleLine = true,
+                                                    label = { Text(stringResource(R.string.pdf_rename_label)) },
+                                                )
+                                            },
+                                            confirmButton = {
+                                                TextButton(
+                                                    onClick = {
+                                                        pdfRenameOpen = false
+                                                        scope.launch {
+                                                            val uid = supabaseUserId
+                                                            if (uid.isNullOrBlank()) return@launch
+                                                            runCatching {
+                                                                cloudRepo.updateFileName(viewerDoc, pdfRenameText)
+                                                            }.onSuccess {
+                                                                val newName = pdfRenameText.replace("/", "_").trim()
+                                                                if (newName.isNotEmpty()) {
+                                                                    viewerDoc = viewerDoc.copy(fileName = newName)
+                                                                    cloudDocs = cloudDocs.map { d ->
+                                                                        if (d.docId == viewerDoc.docId) viewerDoc else d
+                                                                    }
+                                                                }
+                                                            }.onFailure { e ->
+                                                                Toast.makeText(
+                                                                    context,
+                                                                    e.message ?: "Rename failed",
+                                                                    Toast.LENGTH_LONG,
+                                                                ).show()
+                                                            }
+                                                        }
+                                                    },
+                                                ) { Text(stringResource(R.string.action_confirm)) }
+                                            },
+                                            dismissButton = {
+                                                TextButton(onClick = { pdfRenameOpen = false }) {
+                                                    Text(stringResource(R.string.action_cancel))
+                                                }
+                                            },
+                                        )
+                                    }
+                                }
+                            }
 
                             AppScreen.LoadingAligned -> ScanLoadingScreen(
                                 message = stringResource(R.string.scan_loading_aligned),
@@ -399,20 +641,13 @@ class MainActivity : ComponentActivity() {
                             is AppScreen.ScannedResult -> ScanResultScreen(
                                 scannedJpeg = s.jpeg,
                                 onCancel = { screen = AppScreen.Home },
-                                onShare = {
-                                    // Convert to compressed single-page PDF, then send to desktop with Firebase token
-                                    val token = firebaseIdToken
-                                    if (token.isNullOrBlank()) {
-                                        Toast.makeText(context, "Missing Firebase token.", Toast.LENGTH_LONG).show()
+                                onSave = {
+                                    val uid = supabaseUserId
+                                    if (uid.isNullOrBlank()) {
+                                        Toast.makeText(context, "Not signed in.", Toast.LENGTH_LONG).show()
                                         return@ScanResultScreen
                                     }
                                     scope.launch {
-                                        Toast.makeText(
-                                            context,
-                                            "Preparing PDF & sending to desktop…",
-                                            Toast.LENGTH_SHORT,
-                                        ).show()
-
                                         val fileName = "scanmeow_${System.currentTimeMillis()}.pdf"
                                         val pdfBytes = runCatching {
                                             createCompressedPdfFromJpeg(s.jpeg)
@@ -426,24 +661,65 @@ class MainActivity : ComponentActivity() {
                                         }
 
                                         runCatching {
-                                            sendPdfToDesktop(pdfBytes, fileName, token)
-                                        }.onSuccess {
-                                            Toast.makeText(context, "Sent to desktop.", Toast.LENGTH_SHORT).show()
-                                            screen = AppScreen.Home
+                                            cloudRepo.uploadPdfAndMeta(uid, pdfBytes, fileName)
                                         }.onFailure { e ->
+                                            withContext(Dispatchers.Main) {
+                                                Toast.makeText(
+                                                    context,
+                                                    "Cloud save failed: ${e.message ?: "unknown"}",
+                                                    Toast.LENGTH_LONG,
+                                                ).show()
+                                            }
+                                            return@launch
+                                        }
+
+                                        withContext(Dispatchers.Main) {
                                             Toast.makeText(
                                                 context,
-                                                "Send failed: ${e.message ?: "unknown"}",
+                                                context.getString(R.string.toast_saved_cloud),
+                                                Toast.LENGTH_SHORT,
+                                            ).show()
+                                            screen = AppScreen.Home
+                                        }
+                                    }
+                                },
+                                onShare = {
+                                    scope.launch {
+                                        val pdfBytes = runCatching {
+                                            createCompressedPdfFromJpeg(s.jpeg)
+                                        }.getOrElse { e ->
+                                            Toast.makeText(
+                                                context,
+                                                "PDF creation failed: ${e.message ?: "unknown"}",
                                                 Toast.LENGTH_LONG,
                                             ).show()
+                                            return@launch
+                                        }
+                                        val token = supabaseAccessToken
+                                        if (token.isNullOrBlank()) {
+                                            Toast.makeText(context, "Not signed in.", Toast.LENGTH_LONG).show()
+                                            return@launch
+                                        }
+                                        runCatching {
+                                            val fn = "scanmeow_${System.currentTimeMillis()}.pdf"
+                                            sendPdfToDesktop(pdfBytes, fn, token)
+                                        }.onSuccess {
+                                            Toast.makeText(
+                                                context,
+                                                context.getString(R.string.toast_sent_to_pc),
+                                                Toast.LENGTH_SHORT,
+                                            ).show()
+                                        }.onFailure { e ->
+                                            Toast.makeText(context, e.message ?: "TCP send failed", Toast.LENGTH_LONG).show()
                                         }
                                     }
                                 },
                                 modifier = Modifier.padding(innerPadding),
                                 cancelLabel = stringResource(R.string.action_cancel),
-                                shareLabel = stringResource(R.string.action_share),
+                                saveLabel = stringResource(R.string.action_save),
                             )
                         }
+                    }
                     }
                 }
             }
@@ -457,6 +733,7 @@ private sealed interface AppScreen {
     data object LoadingFinal : AppScreen
     data class AlignedReview(val jpeg: ByteArray) : AppScreen
     data class ScannedResult(val jpeg: ByteArray) : AppScreen
+    data class PdfViewer(val doc: UserCloudDocument) : AppScreen
 }
 
 private fun drawableToJpegBytes(
@@ -569,7 +846,7 @@ private fun aspectFitRect(srcW: Int, srcH: Int, dstW: Float, dstH: Float): RectF
     return RectF(left, top, left + drawW, top + drawH)
 }
 
-private suspend fun sendPdfToDesktop(pdfBytes: ByteArray, fileName: String, firebaseIdToken: String) =
+private suspend fun sendPdfToDesktop(pdfBytes: ByteArray, fileName: String, supabaseAccessToken: String) =
     withContext(Dispatchers.IO) {
         Socket(DESKTOP_TCP_HOST, DESKTOP_TCP_PORT).use { socket ->
             DataOutputStream(socket.getOutputStream()).use { dos ->
@@ -580,8 +857,8 @@ private suspend fun sendPdfToDesktop(pdfBytes: ByteArray, fileName: String, fire
                 dos.writeShort(nameBytes.size) // 2 bytes
                 dos.write(nameBytes) // filename
 
-                val tokenBytes = firebaseIdToken.toByteArray(Charsets.UTF_8)
-                require(tokenBytes.size <= 65535) { "idToken too long" }
+                val tokenBytes = supabaseAccessToken.toByteArray(Charsets.UTF_8)
+                require(tokenBytes.size <= 65535) { "access token too long" }
                 dos.writeShort(tokenBytes.size) // 2 bytes
                 dos.write(tokenBytes)
 
@@ -597,12 +874,18 @@ private suspend fun sendPdfToDesktop(pdfBytes: ByteArray, fileName: String, fire
                 dos.flush()
             }
         }
-    }
+}
 
 @Preview(showBackground = true)
 @Composable
 fun MainHomeScreenPreview() {
     ScanMeowTheme {
-        MainHomeScreen()
+        MainHomeScreen(
+            cloudDocuments = emptyList(),
+            recentDocumentsExpanded = false,
+            onToggleRecentDocumentsExpanded = {},
+            bluetoothModeForPc = false,
+            onBluetoothModeChange = {},
+        )
     }
 }

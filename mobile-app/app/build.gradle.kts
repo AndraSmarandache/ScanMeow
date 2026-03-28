@@ -1,7 +1,8 @@
+import java.util.Properties
+
 plugins {
     alias(libs.plugins.android.application)
     alias(libs.plugins.kotlin.compose)
-    id("com.google.gms.google-services")
 }
 
 android {
@@ -20,6 +21,15 @@ android {
         versionName = "1.0"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
+
+        val local = Properties()
+        rootProject.file("local.properties").takeIf { it.exists() }?.reader()?.use { local.load(it) }
+        val supabaseUrl = (local.getProperty("supabase.url") ?: "").trim()
+        val supabaseAnon = (local.getProperty("supabase.anon.key") ?: "").trim()
+        val googleWebClientId = (local.getProperty("google.web.client.id") ?: "").trim()
+        buildConfigField("String", "SUPABASE_URL", "\"${supabaseUrl.replace("\"", "\\\"")}\"")
+        buildConfigField("String", "SUPABASE_ANON_KEY", "\"${supabaseAnon.replace("\"", "\\\"")}\"")
+        buildConfigField("String", "GOOGLE_WEB_CLIENT_ID", "\"${googleWebClientId.replace("\"", "\\\"")}\"")
     }
 
     buildTypes {
@@ -37,6 +47,7 @@ android {
     }
     buildFeatures {
         compose = true
+        buildConfig = true
     }
 }
 
@@ -45,10 +56,6 @@ dependencies {
     implementation(libs.androidx.lifecycle.runtime.ktx)
     implementation(libs.androidx.activity.compose)
     implementation(platform(libs.androidx.compose.bom))
-    implementation(platform("com.google.firebase:firebase-bom:34.11.0"))
-    implementation("com.google.firebase:firebase-auth")
-    implementation("com.google.firebase:firebase-firestore")
-    implementation("com.google.firebase:firebase-storage")
     implementation("com.google.android.gms:play-services-auth:21.5.1")
     implementation("io.coil-kt.coil3:coil-compose:3.4.0")
     implementation(libs.androidx.compose.ui)
