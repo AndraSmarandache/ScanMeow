@@ -67,7 +67,13 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
 
     private fun generatePdf(imagePath: String, name: String): String? {
         return try {
-            val bitmap = BitmapFactory.decodeFile(imagePath) ?: return null
+            val opts = BitmapFactory.Options().apply {
+                inJustDecodeBounds = true
+                BitmapFactory.decodeFile(imagePath, this)
+                inSampleSize = calcSampleSize(outWidth, outHeight, 2480, 3508)
+                inJustDecodeBounds = false
+            }
+            val bitmap = BitmapFactory.decodeFile(imagePath, opts) ?: return null
             val pdfDoc = PdfDocument()
             val pageInfo = PdfDocument.PageInfo.Builder(bitmap.width, bitmap.height, 1).create()
             val page = pdfDoc.startPage(pageInfo)
@@ -102,4 +108,14 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
 
     suspend fun getDocumentById(id: Long): Document? =
         withContext(Dispatchers.IO) { storage.getById(id) }
+}
+
+private fun calcSampleSize(width: Int, height: Int, reqWidth: Int, reqHeight: Int): Int {
+    var sample = 1
+    if (height > reqHeight || width > reqWidth) {
+        val halfH = height / 2
+        val halfW = width / 2
+        while (halfH / sample >= reqHeight && halfW / sample >= reqWidth) sample *= 2
+    }
+    return sample
 }

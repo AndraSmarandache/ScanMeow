@@ -10,6 +10,7 @@ import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.ImageBitmap
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.text.font.FontWeight
@@ -18,6 +19,8 @@ import androidx.compose.ui.unit.sp
 import com.project.scanmeow.ui.components.ScanMeowTopBar
 import com.project.scanmeow.ui.theme.BackgroundWhite
 import com.project.scanmeow.ui.theme.ScanBlue
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
 
 @Composable
 fun ConfirmScreen(
@@ -26,6 +29,24 @@ fun ConfirmScreen(
     onConfirm: (String) -> Unit
 ) {
     var docName by remember { mutableStateOf("Scanned document") }
+    var bitmap by remember { mutableStateOf<ImageBitmap?>(null) }
+    var loading by remember { mutableStateOf(true) }
+
+    LaunchedEffect(imagePath) {
+        loading = true
+        bitmap = if (imagePath != null) {
+            withContext(Dispatchers.IO) {
+                val opts = BitmapFactory.Options().apply {
+                    inJustDecodeBounds = true
+                    BitmapFactory.decodeFile(imagePath, this)
+                    inSampleSize = calcSampleSize(outWidth, outHeight, 1080, 1920)
+                    inJustDecodeBounds = false
+                }
+                BitmapFactory.decodeFile(imagePath, opts)?.asImageBitmap()
+            }
+        } else null
+        loading = false
+    }
 
     Column(
         modifier = Modifier
@@ -34,7 +55,6 @@ fun ConfirmScreen(
     ) {
         ScanMeowTopBar(showBack = true, onBackClick = onRetake)
 
-        // Document preview
         Box(
             modifier = Modifier
                 .fillMaxWidth()
@@ -43,26 +63,18 @@ fun ConfirmScreen(
                 .background(Color(0xFFF0F0F0), RoundedCornerShape(12.dp)),
             contentAlignment = Alignment.Center
         ) {
-            if (imagePath != null) {
-                val bitmap = remember(imagePath) {
-                    BitmapFactory.decodeFile(imagePath)?.asImageBitmap()
-                }
-                if (bitmap != null) {
-                    Image(
-                        bitmap = bitmap,
-                        contentDescription = "Scanned document",
-                        modifier = Modifier.fillMaxSize().padding(8.dp),
-                        contentScale = ContentScale.Fit
-                    )
-                } else {
-                    Text("Could not load image", color = Color.Gray)
-                }
-            } else {
-                Text("No image captured", color = Color.Gray)
+            when {
+                loading -> CircularProgressIndicator()
+                bitmap != null -> Image(
+                    bitmap = bitmap!!,
+                    contentDescription = "Scanned document",
+                    modifier = Modifier.fillMaxSize().padding(8.dp),
+                    contentScale = ContentScale.Fit
+                )
+                else -> Text("Could not load image", color = Color.Gray)
             }
         }
 
-        // Document name input
         OutlinedTextField(
             value = docName,
             onValueChange = { docName = it },
@@ -75,7 +87,6 @@ fun ConfirmScreen(
 
         Spacer(modifier = Modifier.height(12.dp))
 
-        // Action buttons
         Row(
             modifier = Modifier
                 .fillMaxWidth()
@@ -94,7 +105,7 @@ fun ConfirmScreen(
                 modifier = Modifier.weight(1f).height(50.dp),
                 colors = ButtonDefaults.buttonColors(containerColor = ScanBlue),
                 shape = RoundedCornerShape(10.dp),
-                enabled = imagePath != null
+                enabled = imagePath != null && !loading
             ) {
                 Text("Confirm", fontSize = 16.sp, fontWeight = FontWeight.Medium)
             }
@@ -102,4 +113,14 @@ fun ConfirmScreen(
 
         Spacer(modifier = Modifier.height(16.dp))
     }
+}
+
+private fun calcSampleSize(width: Int, height: Int, reqWidth: Int, reqHeight: Int): Int {
+    var sample = 1
+    if (height > reqHeight || width > reqWidth) {
+        val halfH = height / 2
+        val halfW = width / 2
+        while (halfH / sample >= reqHeight && halfW / sample >= reqWidth) sample *= 2
+    }
+    return sample
 }
