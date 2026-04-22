@@ -148,11 +148,11 @@ private fun CameraContent(
 
         // Document corner overlay
         Canvas(modifier = Modifier.fillMaxSize()) {
-            val padding = 48.dp.toPx()
+            val padding = 28.dp.toPx()
             val cornerLen = 44.dp.toPx()
             val strokeW = 4.dp.toPx()
             val left = padding
-            val top = size.height * 0.15f
+            val top = size.height * 0.10f
             val right = size.width - padding
             val bottom = size.height - bottomBarTotalPx - 12.dp.toPx()
             val color = OverlayBlue
