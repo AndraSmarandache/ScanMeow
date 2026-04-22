@@ -10,11 +10,14 @@ import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.ImageBitmap
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
 import com.project.scanmeow.data.model.Document
 import com.project.scanmeow.ui.components.ScanMeowTopBar
 import com.project.scanmeow.ui.theme.BackgroundWhite
@@ -65,18 +68,32 @@ fun DocumentViewScreen(
                 .background(Color(0xFFF0F0F0), RoundedCornerShape(12.dp)),
             contentAlignment = Alignment.Center
         ) {
-            val bitmap = remember(document.imagePath) {
-                BitmapFactory.decodeFile(document.imagePath)?.asImageBitmap()
+            var bitmap by remember { mutableStateOf<ImageBitmap?>(null) }
+            var loading by remember { mutableStateOf(true) }
+            LaunchedEffect(document.imagePath) {
+                loading = true
+                bitmap = withContext(Dispatchers.IO) {
+                    val opts = BitmapFactory.Options().apply {
+                        inJustDecodeBounds = true
+                        BitmapFactory.decodeFile(document.imagePath, this)
+                        var sample = 1
+                        while (outWidth / sample > 1080 || outHeight / sample > 1920) sample *= 2
+                        inSampleSize = sample
+                        inJustDecodeBounds = false
+                    }
+                    BitmapFactory.decodeFile(document.imagePath, opts)?.asImageBitmap()
+                }
+                loading = false
             }
-            if (bitmap != null) {
-                Image(
-                    bitmap = bitmap,
+            when {
+                loading -> CircularProgressIndicator(color = ScanBlue)
+                bitmap != null -> Image(
+                    bitmap = bitmap!!,
                     contentDescription = document.name,
                     modifier = Modifier.fillMaxSize().padding(8.dp),
                     contentScale = ContentScale.Fit
                 )
-            } else {
-                Text("Preview not available", color = Color.Gray)
+                else -> Text("Preview not available", color = Color.Gray)
             }
         }
 
