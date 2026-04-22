@@ -117,10 +117,6 @@ fun ConfirmScreen(
 
 private fun calcSampleSize(width: Int, height: Int, reqWidth: Int, reqHeight: Int): Int {
     var sample = 1
-    if (height > reqHeight || width > reqWidth) {
-        val halfH = height / 2
-        val halfW = width / 2
-        while (halfH / sample >= reqHeight && halfW / sample >= reqWidth) sample *= 2
-    }
+    while (width / sample > reqWidth || height / sample > reqHeight) sample *= 2
     return sample
 }

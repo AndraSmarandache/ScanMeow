@@ -56,12 +56,19 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
 
     fun saveDocument(imagePath: String, name: String, onSaved: (Long) -> Unit) {
         viewModelScope.launch(Dispatchers.IO) {
-            val pdfPath = generatePdf(imagePath, name)
-            val sizeBytes = File(pdfPath ?: imagePath).length()
-            val doc = Document(name = name, imagePath = imagePath, pdfPath = pdfPath, sizeBytes = sizeBytes)
+            // Save immediately with JPEG so the user can navigate away instantly
+            val sizeBytes = File(imagePath).length()
+            val doc = Document(name = name, imagePath = imagePath, pdfPath = null, sizeBytes = sizeBytes)
             val saved = storage.insert(doc)
             refreshDocuments()
             withContext(Dispatchers.Main) { onSaved(saved.id) }
+
+            // Generate PDF in background after navigation
+            val pdfPath = generatePdf(imagePath, name)
+            if (pdfPath != null) {
+                storage.update(saved.copy(pdfPath = pdfPath, sizeBytes = File(pdfPath).length()))
+                refreshDocuments()
+            }
         }
     }
 
@@ -112,10 +119,6 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
 
 private fun calcSampleSize(width: Int, height: Int, reqWidth: Int, reqHeight: Int): Int {
     var sample = 1
-    if (height > reqHeight || width > reqWidth) {
-        val halfH = height / 2
-        val halfW = width / 2
-        while (halfH / sample >= reqHeight && halfW / sample >= reqWidth) sample *= 2
-    }
+    while (width / sample > reqWidth || height / sample > reqHeight) sample *= 2
     return sample
 }

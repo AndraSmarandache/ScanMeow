@@ -28,6 +28,11 @@ class DocumentStorage(context: Context) {
         return saved
     }
 
+    fun update(doc: Document) {
+        val docs = readAll().map { if (it.id == doc.id) doc else it }
+        write(docs)
+    }
+
     fun delete(id: Long) {
         write(readAll().filter { it.id != id })
     }
