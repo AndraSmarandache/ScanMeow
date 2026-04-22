@@ -34,8 +34,7 @@ import com.project.scanmeow.ui.theme.ScanBlue
 import com.project.scanmeow.ui.theme.ScanMeowTheme
 
 /**
- * Infinite “laser line” over a paper outline — reads as “document scanning”.
- * Uses [rememberInfiniteTransition] + [animateFloat]; drawing is in [Canvas] (no extra deps).
+ * Infinite “laser line” over a paper outline — reads as “document scanning”
  */
 @Composable
 private fun DocumentScanAnimation(modifier: Modifier = Modifier) {

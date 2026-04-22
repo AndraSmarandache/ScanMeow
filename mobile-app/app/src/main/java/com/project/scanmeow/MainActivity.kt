@@ -88,7 +88,10 @@ import okhttp3.RequestBody.Companion.toRequestBody
 import kotlin.math.max
 import kotlin.math.min
 
-/** Emulator: loopback to the dev PC. Physical device: use the PC's LAN IP */
+/**
+ * Emulator uses 10.0.2.2 to reach the host machine
+ * Physical device needs the PC LAN IP
+ */
 private const val SCAN_API_BASE = "http://10.0.2.2:8765"
 private const val DESKTOP_TCP_HOST = "10.0.2.2" // emulator -> host
 private const val DESKTOP_TCP_PORT = 5566
@@ -103,7 +106,7 @@ class MainActivity : ComponentActivity() {
         setContent {
             val context = LocalContext.current
             val scope = rememberCoroutineScope()
-            // OpenCV can run for tens of seconds; default OkHttp timeouts are too short for that
+            // Scan can take tens of seconds so OkHttp timeouts are longer
             val http = remember {
                 OkHttpClient.Builder()
                     .connectTimeout(120, TimeUnit.SECONDS)
@@ -113,7 +116,7 @@ class MainActivity : ComponentActivity() {
                     .build()
             }
 
-            // ── Google → Supabase session (JWT in accessToken) ───────────────────
+            // Google Sign-In -> Supabase session
             var supabaseUserId by remember { mutableStateOf<String?>(null) }
             var supabaseAccessToken by remember { mutableStateOf<String?>(null) }
             var googleEmail by remember { mutableStateOf<String?>(null) }
@@ -144,22 +147,14 @@ class MainActivity : ComponentActivity() {
                 val data = activityResult.data
                 if (activityResult.resultCode != Activity.RESULT_OK) {
                     val hint = when (activityResult.resultCode) {
-                        Activity.RESULT_CANCELED -> buildString {
-                            append("Sign-in canceled (code 0). Common causes: ")
-                            append("1) emulator without Google Play or without a Google account in Settings; ")
-                            append("2) back was pressed; ")
-                            append("3) missing OAuth Android client for package ")
-                            append(context.packageName)
-                            append(" + debug SHA-1 in Google Cloud (UI may close immediately). ")
-                            append("Rebuild after saving SHA-1.")
-                        }
-                        else -> "Google sign-in failed (code ${activityResult.resultCode}). Check Web Client ID, Android client, and SHA-1."
+                        Activity.RESULT_CANCELED -> "Sign-in canceled"
+                        else -> "Sign-in failed"
                     }
                     Toast.makeText(context, hint, Toast.LENGTH_LONG).show()
                     return@rememberLauncherForActivityResult
                 }
                 if (data == null) {
-                    Toast.makeText(context, "Google sign-in: empty response.", Toast.LENGTH_SHORT).show()
+                    Toast.makeText(context, "Sign-in failed", Toast.LENGTH_SHORT).show()
                     return@rememberLauncherForActivityResult
                 }
                 val task = GoogleSignIn.getSignedInAccountFromIntent(data)
@@ -169,7 +164,7 @@ class MainActivity : ComponentActivity() {
                     if (googleIdToken.isNullOrBlank()) {
                         Toast.makeText(
                             context,
-                            "Missing Google idToken. Verify Web Client ID and SHA-1.",
+                            "Sign-in failed",
                             Toast.LENGTH_LONG,
                         ).show()
                         return@rememberLauncherForActivityResult
@@ -192,15 +187,9 @@ class MainActivity : ComponentActivity() {
                         }
                     }
                 } catch (e: ApiException) {
-                    val code = e.statusCode
-                    val detail = when (code) {
-                        10 -> "DEVELOPER_ERROR (10): missing or incorrect Android OAuth client (package + SHA-1) in Google Cloud."
-                        12501 -> "User canceled."
-                        else -> e.message ?: "unknown"
-                    }
                     Toast.makeText(
                         context,
-                        "Google: $detail (code $code)",
+                        "Sign-in failed",
                         Toast.LENGTH_LONG,
                     ).show()
                 }
@@ -223,7 +212,7 @@ class MainActivity : ComponentActivity() {
                                     if (BuildConfig.SUPABASE_URL.isBlank() || BuildConfig.SUPABASE_ANON_KEY.isBlank()) {
                                         Toast.makeText(
                                             context,
-                                            "Set supabase.url and supabase.anon.key in local.properties.",
+                                            "Invalid Supabase config",
                                             Toast.LENGTH_LONG,
                                         ).show()
                                         return@Button
@@ -232,16 +221,15 @@ class MainActivity : ComponentActivity() {
                                         Toast.makeText(
                                             context,
                                             if (webClientIdLooksInvalid) {
-                                                "In local.properties, google.web.client.id must be a real Web Client ID, " +
-                                                    "not a placeholder. Find it in Google Cloud Credentials or old google-services.json (client_type 3)."
+                                                "Invalid Google Web client ID"
                                             } else {
-                                                "Set google.web.client.id in local.properties."
+                                                "Invalid Google Web client ID"
                                             },
                                             Toast.LENGTH_LONG,
                                         ).show()
                                         return@Button
                                     }
-                                    // Clear any prior session so the account picker appears as expected
+                                    // Sign out first so the account chooser shows
                                     signInClient.signOut().addOnCompleteListener {
                                         signInLauncher.launch(signInClient.signInIntent)
                                     }
@@ -810,7 +798,7 @@ private suspend fun OkHttpClient.postScanMultipart(
 private fun createCompressedPdfFromJpeg(jpegBytes: ByteArray): ByteArray {
     val decoded = decodeJpegForPdf(jpegBytes) ?: error("decode jpeg failed")
 
-    // Downscale for smaller PDF size
+    // Downscale to keep PDFs reasonably small and fast to upload/view
     val maxDim = max(decoded.width, decoded.height).toFloat()
     val scale = min(1f, PDF_MAX_DIM_PX.toFloat() / maxDim)
     val scaled = if (scale < 1f) {
@@ -819,7 +807,7 @@ private fun createCompressedPdfFromJpeg(jpegBytes: ByteArray): ByteArray {
         Bitmap.createScaledBitmap(decoded, w, h, true)
     } else decoded
 
-    // Extra “compression” step: JPEG re-encode then decode to reduce what the PDF embeds
+    // Re-encode as JPEG to reduce the image payload embedded in the PDF
     val compressedJpeg = ByteArrayOutputStream().use { baos ->
         scaled.compress(android.graphics.Bitmap.CompressFormat.JPEG, PDF_JPEG_QUALITY, baos)
         baos.toByteArray()
@@ -828,7 +816,7 @@ private fun createCompressedPdfFromJpeg(jpegBytes: ByteArray): ByteArray {
 
     val pdfDoc = PdfDocument()
     try {
-        // A4 in points at 72dpi
+        // A4 page size in points at 72 DPI
         val pageW = 595
         val pageH = 842
         val pageInfo = PdfDocument.PageInfo.Builder(pageW, pageH, 1).create()

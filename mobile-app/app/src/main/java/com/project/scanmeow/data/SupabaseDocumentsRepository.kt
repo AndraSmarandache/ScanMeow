@@ -22,8 +22,7 @@ class ListenerRegistration(private val cancel: () -> Unit) {
 }
 
 /**
- * Supabase REST (PostgREST + Storage) client using the logged-in user's JWT.
- * [BuildConfig] values are supplied from local.properties (not committed to the repo)
+ * Supabase REST (PostgREST + Storage) client using the logged-in user's JWTi
  */
 class SupabaseDocumentsRepository(
     private val http: OkHttpClient,
