@@ -198,13 +198,12 @@ fun MainHomeScreen(
     onToggleRecentDocumentsExpanded: () -> Unit,
     bluetoothModeForPc: Boolean,
     onBluetoothModeChange: (Boolean) -> Unit,
-    onScanDocumentClick: (drawableId: Int) -> Unit = {},
+    onScanDocumentClick: () -> Unit = {},
     onDocumentClick: (UserCloudDocument) -> Unit = {},
     onShareCloudDocuments: suspend (List<UserCloudDocument>) -> Unit = {},
     onDeleteCloudDocuments: suspend (List<UserCloudDocument>) -> Unit = {},
 ) {
     val context = LocalContext.current
-    val demoDrawableId = rememberWithDrawables(context)
     val scope = rememberCoroutineScope()
 
     var docSelectionMode by remember { mutableStateOf(false) }
@@ -285,11 +284,7 @@ fun MainHomeScreen(
             horizontalArrangement = Arrangement.Center,
         ) {
             Button(
-                onClick = {
-                    if (demoDrawableId != 0) {
-                        onScanDocumentClick(demoDrawableId)
-                    }
-                },
+                onClick = onScanDocumentClick,
                 modifier = Modifier.heightIn(min = 56.dp),
                 colors = ButtonDefaults.buttonColors(
                     containerColor = ScanBlue,
@@ -304,15 +299,6 @@ fun MainHomeScreen(
                 Spacer(Modifier.width(8.dp))
                 Text(text = stringResource(R.string.scan_document))
             }
-        }
-
-        if (demoDrawableId == 0) {
-            Spacer(Modifier.height(12.dp))
-            Text(
-                text = stringResource(R.string.toast_missing_demo_document),
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-            )
         }
 
         Spacer(Modifier.height(20.dp))
@@ -493,13 +479,6 @@ fun MainHomeScreen(
             modifier = Modifier.fillMaxWidth(),
         )
         Spacer(Modifier.height(12.dp))
-    }
-}
-
-@Composable
-private fun rememberWithDrawables(context: android.content.Context): Int {
-    return remember {
-        context.resources.getIdentifier("demo_document", "drawable", context.packageName)
     }
 }
 

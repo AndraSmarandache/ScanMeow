@@ -14,7 +14,6 @@ import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.enableEdgeToEdge
-import androidx.annotation.DrawableRes
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -43,7 +42,6 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.LaunchedEffect
-import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
@@ -71,6 +69,7 @@ import com.project.scanmeow.ui.home.PdfViewerScreen
 import com.project.scanmeow.ui.home.ScanAlignedReviewScreen
 import com.project.scanmeow.ui.home.ScanLoadingScreen
 import com.project.scanmeow.ui.home.ScanResultScreen
+import com.project.scanmeow.ui.screens.ScannerScreen
 import com.project.scanmeow.ui.theme.ScanMeowTheme
 import java.io.ByteArrayOutputStream
 import java.io.DataOutputStream
@@ -254,7 +253,7 @@ class MainActivity : ComponentActivity() {
                     }
                 } else {
                     var screen by remember { mutableStateOf<AppScreen>(AppScreen.Home) }
-                    var sourceDrawableId by remember { mutableIntStateOf(0) }
+                    var capturedJpegBytes by remember { mutableStateOf<ByteArray?>(null) }
                     var accountMenuExpanded by remember { mutableStateOf(false) }
                     var cloudDocs by remember { mutableStateOf<List<UserCloudDocument>>(emptyList()) }
                     val cloudRepo = remember { SupabaseDocumentsRepository(http) }
@@ -454,20 +453,19 @@ class MainActivity : ComponentActivity() {
                                         ).show()
                                     }
                                 },
-                                onScanDocumentClick = { drawableId ->
-                                    if (drawableId == 0) {
-                                        Toast.makeText(
-                                            context,
-                                            context.getString(R.string.toast_missing_demo_document),
-                                            Toast.LENGTH_SHORT,
-                                        ).show()
-                                        return@MainHomeScreen
-                                    }
-                                    sourceDrawableId = drawableId
+                                onScanDocumentClick = { screen = AppScreen.Scanner },
+                                onDocumentClick = {
+                                    screen = AppScreen.PdfViewer(it)
+                                },
+                            )
+
+                            AppScreen.Scanner -> ScannerScreen(
+                                onImageCaptured = { filePath ->
+                                    val jpeg = File(filePath).readBytes()
+                                    capturedJpegBytes = jpeg
                                     screen = AppScreen.LoadingAligned
                                     scope.launch {
                                         val result = runCatching {
-                                            val jpeg = drawableToJpegBytes(context.resources, drawableId)
                                             http.postScanMultipart(
                                                 jpegBytes = jpeg,
                                                 binarize = false,
@@ -490,9 +488,7 @@ class MainActivity : ComponentActivity() {
                                         }
                                     }
                                 },
-                                onDocumentClick = {
-                                    screen = AppScreen.PdfViewer(it)
-                                },
+                                onBack = { screen = AppScreen.Home },
                             )
 
                             is AppScreen.PdfViewer -> {
@@ -608,11 +604,12 @@ class MainActivity : ComponentActivity() {
                                 alignedJpeg = s.jpeg,
                                 onCancel = { screen = AppScreen.Home },
                                 onConfirm = {
+                                    val jpeg = capturedJpegBytes
+                                    if (jpeg == null) { screen = AppScreen.Home; return@ScanAlignedReviewScreen }
                                     val alignedBytes = s.jpeg
                                     screen = AppScreen.LoadingFinal
                                     scope.launch {
                                         val result = runCatching {
-                                            val jpeg = drawableToJpegBytes(context.resources, sourceDrawableId)
                                             http.postScanMultipart(
                                                 jpegBytes = jpeg,
                                                 binarize = true,
@@ -729,24 +726,12 @@ class MainActivity : ComponentActivity() {
 
 private sealed interface AppScreen {
     data object Home : AppScreen
+    data object Scanner : AppScreen
     data object LoadingAligned : AppScreen
     data object LoadingFinal : AppScreen
     data class AlignedReview(val jpeg: ByteArray) : AppScreen
     data class ScannedResult(val jpeg: ByteArray) : AppScreen
     data class PdfViewer(val doc: UserCloudDocument) : AppScreen
-}
-
-private fun drawableToJpegBytes(
-    res: android.content.res.Resources,
-    @DrawableRes id: Int,
-    quality: Int = 92,
-): ByteArray {
-    val bmp = BitmapFactory.decodeResource(res, id)
-        ?: error("Could not decode drawable $id")
-    ByteArrayOutputStream().use { stream ->
-        bmp.compress(android.graphics.Bitmap.CompressFormat.JPEG, quality, stream)
-        return stream.toByteArray()
-    }
 }
 
 private suspend fun OkHttpClient.postScanMultipart(
