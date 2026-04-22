@@ -58,6 +58,32 @@ def paper_whiten(gray: np.ndarray, kernel_size: int = 51, max_gain: float = 0.95
     return out
 
 
+def detect_corners(img: np.ndarray):
+    """Fast corner detection using Canny only (no GrabCut). Returns ordered corners (TL,TR,BR,BL) or None."""
+    dim_limit = 1080
+    max_dim = max(img.shape)
+    scale = 1.0
+    if max_dim > dim_limit:
+        scale = dim_limit / max_dim
+        small = cv2.resize(img, None, fx=scale, fy=scale, interpolation=cv2.INTER_AREA)
+    else:
+        small = img.copy()
+
+    gray = cv2.cvtColor(small, cv2.COLOR_BGR2GRAY)
+    gray = cv2.GaussianBlur(gray, (5, 5), 0)
+    canny = cv2.Canny(gray, 50, 150)
+    canny = cv2.dilate(canny, cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (5, 5)))
+
+    contours, _ = cv2.findContours(canny, cv2.RETR_LIST, cv2.CHAIN_APPROX_SIMPLE)
+    for c in sorted(contours, key=cv2.contourArea, reverse=True)[:10]:
+        epsilon = 0.02 * cv2.arcLength(c, True)
+        approx = cv2.approxPolyDP(c, epsilon, True)
+        if len(approx) == 4:
+            pts = np.concatenate(approx).reshape(4, 2).astype("float32") / scale
+            return order_points(pts)
+    return None
+
+
 def scan(img: np.ndarray):
     """
     Detect document quad and return warped original (aligned full page), or None if no 4-corner contour

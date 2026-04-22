@@ -64,6 +64,7 @@ import com.project.scanmeow.BuildConfig
 import com.project.scanmeow.data.SupabaseDocumentsRepository
 import com.project.scanmeow.data.UserCloudDocument
 import com.project.scanmeow.data.supabaseSignInWithGoogleIdToken
+import com.project.scanmeow.ui.home.CropAdjustScreen
 import com.project.scanmeow.ui.home.MainHomeScreen
 import com.project.scanmeow.ui.home.PdfViewerScreen
 import com.project.scanmeow.ui.home.ScanAlignedReviewScreen
@@ -84,11 +85,13 @@ import okhttp3.MultipartBody
 import okhttp3.OkHttpClient
 import okhttp3.Request
 import okhttp3.RequestBody.Companion.toRequestBody
+import androidx.compose.ui.geometry.Offset
+import org.json.JSONObject
 import kotlin.math.max
 import kotlin.math.min
 
 /** Emulator → PC host. Physical device: PC LAN IP. */
-private const val SCAN_API_BASE = "http://10.0.2.2:8765"
+private const val SCAN_API_BASE = BuildConfig.SCAN_API_BASE
 private const val DESKTOP_TCP_HOST = "10.0.2.2" // emulator -> host
 private const val DESKTOP_TCP_PORT = 5566
 
@@ -465,30 +468,48 @@ class MainActivity : ComponentActivity() {
                                     capturedJpegBytes = jpeg
                                     screen = AppScreen.LoadingAligned
                                     scope.launch {
-                                        val result = runCatching {
-                                            http.postScanMultipart(
-                                                jpegBytes = jpeg,
-                                                binarize = false,
-                                                aiEnhance = false,
-                                                upright = true,
-                                            )
-                                        }
-                                        result.onSuccess { bytes ->
-                                            screen = AppScreen.AlignedReview(bytes)
+                                        val result = runCatching { http.postDetect(jpeg) }
+                                        result.onSuccess { (corners, w, h) ->
+                                            screen = AppScreen.CropAdjust(jpeg, corners, w, h)
                                         }.onFailure { e ->
                                             screen = AppScreen.Home
                                             Toast.makeText(
                                                 context,
-                                                context.getString(
-                                                    R.string.toast_scan_failed,
-                                                    e.message ?: "unknown",
-                                                ),
+                                                context.getString(R.string.toast_scan_failed, e.message ?: "unknown"),
                                                 Toast.LENGTH_LONG,
                                             ).show()
                                         }
                                     }
                                 },
                                 onBack = { screen = AppScreen.Home },
+                            )
+
+                            is AppScreen.CropAdjust -> CropAdjustScreen(
+                                jpegBytes = s.jpeg,
+                                corners = s.corners,
+                                imageWidth = s.imgWidth,
+                                imageHeight = s.imgHeight,
+                                onRetake = { screen = AppScreen.Home },
+                                onConfirm = { adjustedCorners ->
+                                    val jpeg = s.jpeg
+                                    screen = AppScreen.LoadingFinal
+                                    scope.launch {
+                                        val result = runCatching {
+                                            http.postWarp(jpeg, adjustedCorners)
+                                        }
+                                        result.onSuccess { bytes ->
+                                            screen = AppScreen.ScannedResult(bytes)
+                                        }.onFailure { e ->
+                                            screen = AppScreen.CropAdjust(s.jpeg, s.corners, s.imgWidth, s.imgHeight)
+                                            Toast.makeText(
+                                                context,
+                                                context.getString(R.string.toast_finalize_failed, e.message ?: "unknown"),
+                                                Toast.LENGTH_LONG,
+                                            ).show()
+                                        }
+                                    }
+                                },
+                                modifier = Modifier.padding(innerPadding),
                             )
 
                             is AppScreen.PdfViewer -> {
@@ -729,6 +750,12 @@ private sealed interface AppScreen {
     data object Scanner : AppScreen
     data object LoadingAligned : AppScreen
     data object LoadingFinal : AppScreen
+    data class CropAdjust(
+        val jpeg: ByteArray,
+        val corners: List<Offset>,
+        val imgWidth: Int,
+        val imgHeight: Int,
+    ) : AppScreen
     data class AlignedReview(val jpeg: ByteArray) : AppScreen
     data class ScannedResult(val jpeg: ByteArray) : AppScreen
     data class PdfViewer(val doc: UserCloudDocument) : AppScreen
@@ -859,6 +886,48 @@ private suspend fun sendPdfToDesktop(pdfBytes: ByteArray, fileName: String, supa
                 dos.flush()
             }
         }
+}
+
+private data class DetectResult(val corners: List<Offset>, val width: Int, val height: Int)
+
+private suspend fun OkHttpClient.postDetect(jpegBytes: ByteArray): DetectResult =
+    withContext(Dispatchers.IO) {
+        val body = MultipartBody.Builder()
+            .setType(MultipartBody.FORM)
+            .addFormDataPart("file", "page.jpg", jpegBytes.toRequestBody("image/jpeg".toMediaType()))
+            .build()
+        val req = Request.Builder().url("${BuildConfig.SCAN_API_BASE}/detect").post(body).build()
+        newCall(req).execute().use { resp ->
+            if (!resp.isSuccessful) error("HTTP ${resp.code}")
+            val json = JSONObject(resp.body?.string() ?: error("empty body"))
+            val arr = json.getJSONArray("corners")
+            val corners = (0 until arr.length()).map { i ->
+                val pt = arr.getJSONArray(i)
+                Offset(pt.getDouble(0).toFloat(), pt.getDouble(1).toFloat())
+            }
+            DetectResult(corners, json.getInt("width"), json.getInt("height"))
+        }
+    }
+
+private suspend fun OkHttpClient.postWarp(
+    jpegBytes: ByteArray,
+    corners: List<Offset>,
+): ByteArray = withContext(Dispatchers.IO) {
+    val (tl, tr, br, bl) = corners
+    val url = "${BuildConfig.SCAN_API_BASE}/warp?binarize=true&upright=true" +
+        "&tl_x=${tl.x}&tl_y=${tl.y}" +
+        "&tr_x=${tr.x}&tr_y=${tr.y}" +
+        "&br_x=${br.x}&br_y=${br.y}" +
+        "&bl_x=${bl.x}&bl_y=${bl.y}"
+    val body = MultipartBody.Builder()
+        .setType(MultipartBody.FORM)
+        .addFormDataPart("file", "page.jpg", jpegBytes.toRequestBody("image/jpeg".toMediaType()))
+        .build()
+    val req = Request.Builder().url(url).post(body).build()
+    newCall(req).execute().use { resp ->
+        if (!resp.isSuccessful) error("HTTP ${resp.code}")
+        resp.body?.bytes() ?: error("empty body")
+    }
 }
 
 @Preview(showBackground = true)

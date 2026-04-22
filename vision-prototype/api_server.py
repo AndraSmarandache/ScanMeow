@@ -131,6 +131,76 @@ async def scan_endpoint(
     return Response(content=buf.tobytes(), media_type="image/jpeg")
 
 
+@app.post("/detect")
+async def detect_endpoint(file: UploadFile = File(...)):
+    """Detect document corners; returns corners in pixel coords + image dims."""
+    body = await file.read()
+    nparr = np.frombuffer(body, np.uint8)
+    image = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
+    if image is None:
+        raise HTTPException(status_code=400, detail="Could not decode image")
+    h, w = image.shape[:2]
+    corners = sc.detect_corners(image)
+    if corners is None:
+        inset = 0.05
+        corners = np.array([
+            [w * inset,       h * inset      ],
+            [w * (1 - inset), h * inset      ],
+            [w * (1 - inset), h * (1 - inset)],
+            [w * inset,       h * (1 - inset)],
+        ], dtype="float32")
+    return {"corners": corners.tolist(), "width": w, "height": h}
+
+
+@app.post("/warp")
+async def warp_endpoint(
+    file: UploadFile = File(...),
+    tl_x: float = 0, tl_y: float = 0,
+    tr_x: float = 0, tr_y: float = 0,
+    br_x: float = 0, br_y: float = 0,
+    bl_x: float = 0, bl_y: float = 0,
+    binarize: bool = True,
+    upright: bool = True,
+    whiten: bool = True,
+    sharpen: float = 0.55,
+):
+    """Warp image using provided corners and apply document processing."""
+    body = await file.read()
+    nparr = np.frombuffer(body, np.uint8)
+    image = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
+    if image is None:
+        raise HTTPException(status_code=400, detail="Could not decode image")
+
+    corners = np.array(
+        [[tl_x, tl_y], [tr_x, tr_y], [br_x, br_y], [bl_x, bl_y]], dtype="float32"
+    )
+    aligned = sc.four_point_transform(image, corners)
+
+    if upright:
+        aligned = _upright_reading_order(aligned)
+
+    if binarize:
+        processed = cv2.cvtColor(aligned, cv2.COLOR_BGR2GRAY) if len(aligned.shape) == 3 else aligned.copy()
+        if whiten:
+            processed = sc.paper_whiten(processed, kernel_size=51)
+        processed = np.clip(processed.astype(np.float32) * 1.1 + 18, 0, 255).astype(np.uint8)
+        clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8))
+        processed = clahe.apply(processed)
+        if sharpen > 0:
+            blurred = cv2.GaussianBlur(processed, (0, 0), 0.9)
+            processed = np.clip(
+                processed.astype(np.float32) + sharpen * (processed.astype(np.float32) - blurred.astype(np.float32)),
+                0, 255,
+            ).astype(np.uint8)
+    else:
+        processed = aligned
+
+    ok, buf = cv2.imencode(".jpg", processed, [cv2.IMWRITE_JPEG_QUALITY, 95])
+    if not ok:
+        raise HTTPException(status_code=500, detail="cv2.imencode failed")
+    return Response(content=buf.tobytes(), media_type="image/jpeg")
+
+
 if __name__ == "__main__":
     import uvicorn
 

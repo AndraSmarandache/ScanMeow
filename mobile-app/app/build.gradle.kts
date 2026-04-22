@@ -27,9 +27,12 @@ android {
         val supabaseUrl = (local.getProperty("supabase.url") ?: "").trim()
         val supabaseAnon = (local.getProperty("supabase.anon.key") ?: "").trim()
         val googleWebClientId = (local.getProperty("google.web.client.id") ?: "").trim()
+        val scanApiBase = (local.getProperty("scan.api.base") ?: "http://10.0.2.2:8765").trim()
         buildConfigField("String", "SUPABASE_URL", "\"${supabaseUrl.replace("\"", "\\\"")}\"")
         buildConfigField("String", "SUPABASE_ANON_KEY", "\"${supabaseAnon.replace("\"", "\\\"")}\"")
         buildConfigField("String", "GOOGLE_WEB_CLIENT_ID", "\"${googleWebClientId.replace("\"", "\\\"")}\"")
+        buildConfigField("String", "SCAN_API_BASE", "\"${scanApiBase.replace("\"", "\\\"")}\"")
+
     }
 
     buildTypes {
