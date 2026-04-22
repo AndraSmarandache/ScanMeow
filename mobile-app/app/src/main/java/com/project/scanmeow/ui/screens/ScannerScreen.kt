@@ -11,6 +11,7 @@ import androidx.camera.lifecycle.ProcessCameraProvider
 import androidx.camera.view.PreviewView
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
+import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.material.icons.Icons
@@ -26,7 +27,9 @@ import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.StrokeCap
+import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.core.content.ContextCompat
@@ -80,13 +83,27 @@ private fun CameraContent(
 ) {
     val context = LocalContext.current
     val lifecycleOwner = LocalLifecycleOwner.current
+    val density = LocalDensity.current
+    val navBarHeight = WindowInsets.navigationBars.asPaddingValues().calculateBottomPadding()
+
     var flashEnabled by remember { mutableStateOf(false) }
     var imageCapture by remember { mutableStateOf<ImageCapture?>(null) }
+    val cameraRef = remember { mutableStateOf<Camera?>(null) }
+    val previewViewRef = remember { mutableStateOf<PreviewView?>(null) }
+
+    // Total height occupied by the bottom bar (controls + nav bar)
+    val controlsHeight = 100.dp
+    val bottomBarTotalPx = with(density) { (controlsHeight + navBarHeight).toPx() }
 
     Box(modifier = Modifier.fillMaxSize().background(Color.Black)) {
+
+        // Camera preview
         AndroidView(
             factory = { ctx ->
-                val previewView = PreviewView(ctx)
+                val previewView = PreviewView(ctx).apply {
+                    scaleType = PreviewView.ScaleType.FILL_CENTER
+                }
+                previewViewRef.value = previewView
                 val cameraProviderFuture = ProcessCameraProvider.getInstance(ctx)
                 cameraProviderFuture.addListener({
                     val cameraProvider = cameraProviderFuture.get()
@@ -98,12 +115,13 @@ private fun CameraContent(
                     imageCapture = capture
                     try {
                         cameraProvider.unbindAll()
-                        cameraProvider.bindToLifecycle(
+                        val cam = cameraProvider.bindToLifecycle(
                             lifecycleOwner,
                             CameraSelector.DEFAULT_BACK_CAMERA,
                             preview,
                             capture
                         )
+                        cameraRef.value = cam
                     } catch (e: Exception) {
                         Log.e("ScannerScreen", "Camera bind failed", e)
                     }
@@ -113,21 +131,36 @@ private fun CameraContent(
             modifier = Modifier.fillMaxSize()
         )
 
+        // Tap-to-focus overlay
+        Box(
+            modifier = Modifier
+                .fillMaxSize()
+                .pointerInput(Unit) {
+                    detectTapGestures { offset ->
+                        val pv = previewViewRef.value ?: return@detectTapGestures
+                        val cam = cameraRef.value ?: return@detectTapGestures
+                        val point = pv.meteringPointFactory.createPoint(offset.x, offset.y)
+                        val action = FocusMeteringAction.Builder(point).build()
+                        cam.cameraControl.startFocusAndMetering(action)
+                    }
+                }
+        )
+
         // Document corner overlay
         Canvas(modifier = Modifier.fillMaxSize()) {
-            val padding = 60.dp.toPx()
-            val cornerLen = 40.dp.toPx()
+            val padding = 48.dp.toPx()
+            val cornerLen = 44.dp.toPx()
             val strokeW = 4.dp.toPx()
             val left = padding
             val top = size.height * 0.15f
             val right = size.width - padding
-            val bottom = size.height * 0.75f
+            val bottom = size.height - bottomBarTotalPx - 12.dp.toPx()
             val color = OverlayBlue
 
-            drawRect(Color.Black.copy(alpha = 0.4f), size = Size(size.width, top))
-            drawRect(Color.Black.copy(alpha = 0.4f), topLeft = Offset(0f, bottom), size = Size(size.width, size.height - bottom))
-            drawRect(Color.Black.copy(alpha = 0.4f), topLeft = Offset(0f, top), size = Size(left, bottom - top))
-            drawRect(Color.Black.copy(alpha = 0.4f), topLeft = Offset(right, top), size = Size(size.width - right, bottom - top))
+            drawRect(Color.Black.copy(alpha = 0.5f), size = Size(size.width, top))
+            drawRect(Color.Black.copy(alpha = 0.5f), topLeft = Offset(0f, bottom), size = Size(size.width, size.height - bottom))
+            drawRect(Color.Black.copy(alpha = 0.5f), topLeft = Offset(0f, top), size = Size(left, bottom - top))
+            drawRect(Color.Black.copy(alpha = 0.5f), topLeft = Offset(right, top), size = Size(size.width - right, bottom - top))
 
             // Top-left
             drawLine(color, Offset(left, top + cornerLen), Offset(left, top), strokeWidth = strokeW, cap = StrokeCap.Round)
@@ -143,39 +176,71 @@ private fun CameraContent(
             drawLine(color, Offset(right, bottom), Offset(right, bottom - cornerLen), strokeWidth = strokeW, cap = StrokeCap.Round)
         }
 
-        Row(
+        // Bottom controls bar — sits above the system navigation bar
+        Box(
             modifier = Modifier
                 .fillMaxWidth()
                 .align(Alignment.BottomCenter)
-                .padding(bottom = 40.dp),
-            horizontalArrangement = Arrangement.SpaceEvenly,
-            verticalAlignment = Alignment.CenterVertically
+                .background(Color.Black)
+                .navigationBarsPadding()
+                .height(controlsHeight)
         ) {
-            IconButton(
-                onClick = {
-                    flashEnabled = !flashEnabled
-                    imageCapture?.flashMode = if (flashEnabled) ImageCapture.FLASH_MODE_ON else ImageCapture.FLASH_MODE_OFF
-                },
-                modifier = Modifier.size(52.dp).clip(CircleShape).background(Color.White.copy(alpha = 0.2f))
+            Row(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .padding(horizontal = 40.dp),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
             ) {
-                Icon(
-                    if (flashEnabled) Icons.Default.FlashOn else Icons.Default.FlashOff,
-                    contentDescription = "Flash", tint = Color.White, modifier = Modifier.size(28.dp)
-                )
-            }
+                // Flash button
+                IconButton(
+                    onClick = {
+                        flashEnabled = !flashEnabled
+                        imageCapture?.flashMode = if (flashEnabled) ImageCapture.FLASH_MODE_ON else ImageCapture.FLASH_MODE_OFF
+                    },
+                    modifier = Modifier.size(56.dp)
+                ) {
+                    Icon(
+                        if (flashEnabled) Icons.Default.FlashOn else Icons.Default.FlashOff,
+                        contentDescription = "Flash",
+                        tint = if (flashEnabled) Color(0xFFFFD600) else Color.White,
+                        modifier = Modifier.size(32.dp)
+                    )
+                }
 
-            IconButton(
-                onClick = { takePhoto(context, imageCapture, onImageCaptured) },
-                modifier = Modifier.size(72.dp).clip(CircleShape).background(OverlayBlue)
-            ) {
-                Box(modifier = Modifier.size(56.dp).clip(CircleShape).background(Color.White))
-            }
+                // Capture button — white circle with blue ring
+                Box(
+                    modifier = Modifier
+                        .size(80.dp)
+                        .clip(CircleShape)
+                        .background(OverlayBlue),
+                    contentAlignment = Alignment.Center
+                ) {
+                    IconButton(
+                        onClick = { takePhoto(context, imageCapture, onImageCaptured) },
+                        modifier = Modifier.size(80.dp)
+                    ) {
+                        Box(
+                            modifier = Modifier
+                                .size(64.dp)
+                                .clip(CircleShape)
+                                .background(Color.White)
+                        )
+                    }
+                }
 
-            IconButton(
-                onClick = { /* gallery */ },
-                modifier = Modifier.size(52.dp).clip(CircleShape).background(Color.White.copy(alpha = 0.2f))
-            ) {
-                Icon(Icons.Default.Image, contentDescription = "Gallery", tint = Color.White, modifier = Modifier.size(28.dp))
+                // Gallery button
+                IconButton(
+                    onClick = { /* gallery */ },
+                    modifier = Modifier.size(56.dp)
+                ) {
+                    Icon(
+                        Icons.Default.Image,
+                        contentDescription = "Gallery",
+                        tint = Color.White,
+                        modifier = Modifier.size(32.dp)
+                    )
+                }
             }
         }
     }
@@ -197,7 +262,6 @@ private fun takePhoto(
         ContextCompat.getMainExecutor(context),
         object : ImageCapture.OnImageSavedCallback {
             override fun onImageSaved(output: ImageCapture.OutputFileResults) {
-                // Already on main executor — safe to call directly
                 onImageCaptured(photoFile.absolutePath)
             }
             override fun onError(exc: ImageCaptureException) {
