@@ -9,7 +9,6 @@ from PyQt5.QtGui import QColor, QPixmap, QFont, QIcon, QKeySequence, QCloseEvent
 from PyQt5.QtWidgets import (
     QAction,
     QCheckBox,
-    QFileDialog,
     QInputDialog,
     QFrame,
     QHBoxLayout,
@@ -41,6 +40,8 @@ try:
     HAS_FITZ = True
 except ImportError:
     HAS_FITZ = False
+
+_SCANMEOW_BT_CHANNEL = 6  # fixed RFCOMM channel shared with Android app
 
 # ── palette ────────────────────────────────────────────────────────────────────
 _NAV_ACTIVE_BG = "#1a73e8"
@@ -513,7 +514,6 @@ _SORT_MENU_ITEMS: Tuple[Tuple[str, str], ...] = (
 
 class DocumentListView(QWidget):
     open_requested = pyqtSignal(object)
-    receive_requested = pyqtSignal()
     sign_in_requested = pyqtSignal()
     delete_selected_requested = pyqtSignal(list)
     refresh_cloud_requested = pyqtSignal()
@@ -614,26 +614,6 @@ class DocumentListView(QWidget):
         self._refresh_cloud_btn.clicked.connect(self.refresh_cloud_requested.emit)
         tbl.addWidget(self._refresh_cloud_btn)
         tbl.addSpacing(10)
-
-        sim_btn = QPushButton("+ Simulate Receive")
-        sim_btn.setFixedHeight(34)
-        sim_btn.setStyleSheet(f"""
-            QPushButton {{
-                background-color: {_BTN_BLUE};
-                color: #ffffff;
-                border: none;
-                border-radius: 4px;
-                font-size: 12px;
-                font-weight: 500;
-                padding: 0 16px;
-            }}
-            QPushButton:hover   {{ background-color: {_BTN_BLUE_HOVER}; }}
-            QPushButton:pressed {{ background-color: {_BTN_BLUE_PRESS}; }}
-        """)
-        sim_btn.setCursor(Qt.PointingHandCursor)
-        sim_btn.clicked.connect(self.receive_requested)
-        tbl.addWidget(sim_btn)
-        tbl.addSpacing(8)
 
         self._delete_sel_btn = QPushButton("Delete selected")
         self._delete_sel_btn.setFixedHeight(34)
@@ -1344,8 +1324,6 @@ class MainWindow(QMainWindow):
 
         self._view_recent.open_requested.connect(self._open_doc)
         self._view_all.open_requested.connect(self._open_doc)
-        self._view_recent.receive_requested.connect(self._simulate_receive)
-        self._view_all.receive_requested.connect(self._simulate_receive)
         self._view_recent.sign_in_requested.connect(self._sign_in_google)
         self._view_all.sign_in_requested.connect(self._sign_in_google)
         self._view_recent.delete_selected_requested.connect(self._on_delete_selected_docs)
@@ -1379,33 +1357,6 @@ class MainWindow(QMainWindow):
     def _back_to_list(self) -> None:
         self._stack.setCurrentIndex(self._current_page)
         self._sidebar.activate(self._current_page)
-
-    def _simulate_receive(self) -> None:
-        if self._signed_in_uid:
-            QMessageBox.information(
-                self,
-                "Cloud only",
-                "Lists show only cloud documents. Use the mobile app or TCP transfer while signed in.",
-            )
-            return
-        path, _ = QFileDialog.getOpenFileName(
-            self,
-            "Simulate Receive — select a PDF",
-            os.path.expanduser("~"),
-            "PDF files (*.pdf)",
-        )
-        if not path:
-            return
-        try:
-            doc = self._manager.add_from_file(path)
-            self._refresh_lists()
-            QMessageBox.information(
-                self,
-                "Document received",
-                f'"{doc.name}" was added (local only — sign in to use cloud lists).',
-            )
-        except Exception as exc:
-            QMessageBox.critical(self, "Error", str(exc))
 
     def _on_viewer_rename_title(self) -> None:
         doc = self._viewer.current_document()
@@ -1466,6 +1417,10 @@ class MainWindow(QMainWindow):
         )
         self._pdf_receiver.pdf_received.connect(self._on_pdf_received)
         self._pdf_receiver.start()
+
+        self._bt_receiver = BluetoothPdfReceiver(inbox_dir=inbox_dir, parent=self)
+        self._bt_receiver.pdf_received.connect(self._on_pdf_received)
+        self._bt_receiver.start()
 
         self._cloud_user_sync = None
         self._google_sign_in = None
@@ -1677,7 +1632,7 @@ class MainWindow(QMainWindow):
 
     def closeEvent(self, event: QCloseEvent) -> None:
         # Stop background threads to avoid "QThread: Destroyed while thread is still running"
-        for th_attr in ("_cloud_user_sync", "_google_sign_in", "_pdf_receiver"):
+        for th_attr in ("_cloud_user_sync", "_google_sign_in", "_pdf_receiver", "_bt_receiver"):
             th = getattr(self, th_attr, None)
             if th is not None and th.isRunning():
                 try:
@@ -1825,3 +1780,122 @@ class PdfReceiver(QThread):
                     cloud_storage_path or "",
                     file_name,
                 )
+
+
+def _recv_smk_file(conn, inbox_dir: str, supabase: Optional[SupabaseClient]) -> Tuple[str, str, str, str]:
+    """Receive one SMK2 file over any socket-like object. Returns (path, doc_id, storage_path, filename)."""
+    def recv_exact(n: int) -> bytes:
+        data = b""
+        while len(data) < n:
+            chunk = conn.recv(n - len(data))
+            if not chunk:
+                raise ConnectionError("unexpected EOF")
+            data += chunk
+        return data
+
+    magic = recv_exact(4)
+    if magic not in (b"SMK1", b"SMK2"):
+        raise ValueError(f"bad magic: {magic!r}")
+
+    name_len = int.from_bytes(recv_exact(2), "big", signed=False)
+    file_name = recv_exact(name_len).decode("utf-8", errors="ignore")
+
+    access_token = None
+    if magic == b"SMK2":
+        token_len = int.from_bytes(recv_exact(2), "big", signed=False)
+        access_token = recv_exact(token_len).decode("utf-8", errors="ignore")
+
+    file_size = int.from_bytes(recv_exact(8), "big", signed=False)
+    max_size = 80 * 1024 * 1024
+    if file_size <= 0 or file_size > max_size:
+        raise ValueError(f"bad file_size: {file_size}")
+
+    if not file_name.lower().endswith(".pdf"):
+        file_name = "scanmeow_received.pdf"
+
+    out_path = os.path.join(inbox_dir, file_name)
+    if os.path.exists(out_path):
+        base, ext = os.path.splitext(file_name)
+        out_path = os.path.join(inbox_dir, f"{base}_{int(os.times().elapsed)}{ext}")
+
+    remaining = file_size
+    with open(out_path, "wb") as f:
+        while remaining > 0:
+            chunk = conn.recv(min(32 * 1024, remaining))
+            if not chunk:
+                raise ConnectionError("unexpected EOF during payload")
+            f.write(chunk)
+            remaining -= len(chunk)
+
+    cloud_doc_id = ""
+    cloud_storage_path = ""
+    if access_token and supabase is not None:
+        try:
+            with open(out_path, "rb") as f:
+                pdf_bytes = f.read()
+            min_ms = int(time.time() * 1000) - 25 * 60 * 1000
+            existing = supabase.find_recent_document_by_file_name(
+                access_token=access_token, file_name=file_name, min_created_at_millis=min_ms,
+            )
+            if existing is not None:
+                cloud_doc_id, cloud_storage_path = existing.doc_id, existing.storage_path
+            else:
+                cloud_doc_id, cloud_storage_path = supabase.upload_pdf_and_row(
+                    access_token=access_token, pdf_bytes=pdf_bytes, original_file_name=file_name,
+                )
+        except Exception as ex:
+            import traceback
+            traceback.print_exc()
+            print(f"ScanMeow cloud upload failed: {ex}", flush=True)
+
+    return out_path, cloud_doc_id, cloud_storage_path, file_name
+
+
+class BluetoothPdfReceiver(QThread):
+    pdf_received = pyqtSignal(str, str, str, str)
+
+    def __init__(self, *, inbox_dir: str, parent=None):
+        super().__init__(parent)
+        self._inbox_dir = inbox_dir
+        self._supabase: Optional[SupabaseClient] = None
+        sb_url = os.environ.get("SUPABASE_URL", "").strip()
+        sb_anon = os.environ.get("SUPABASE_ANON_KEY", "").strip()
+        if sb_url and sb_anon:
+            self._supabase = SupabaseClient(url=sb_url, anon_key=sb_anon)
+
+    def run(self) -> None:
+        import socket
+
+        af_bt = getattr(socket, "AF_BLUETOOTH", None)
+        proto_rfcomm = getattr(socket, "BTPROTO_RFCOMM", None)
+        if af_bt is None or proto_rfcomm is None:
+            print("ScanMeow: Bluetooth sockets not supported on this platform.", flush=True)
+            return
+
+        try:
+            srv = socket.socket(af_bt, socket.SOCK_STREAM, proto_rfcomm)
+            # "00:00:00:00:00:00" = any local Bluetooth adapter
+            srv.bind(("00:00:00:00:00:00", _SCANMEOW_BT_CHANNEL))
+            srv.listen(1)
+        except OSError as e:
+            print(f"ScanMeow: Bluetooth server failed to start: {e}", flush=True)
+            return
+
+        print(f"ScanMeow Bluetooth receiver ready on RFCOMM channel {_SCANMEOW_BT_CHANNEL}", flush=True)
+
+        while True:
+            try:
+                conn, _ = srv.accept()
+            except Exception as e:
+                print(f"ScanMeow BT accept error: {e}", flush=True)
+                break
+            try:
+                result = _recv_smk_file(conn, self._inbox_dir, self._supabase)
+                self.pdf_received.emit(*result)
+            except Exception as e:
+                print(f"ScanMeow BT recv error: {e}", flush=True)
+            finally:
+                try:
+                    conn.close()
+                except Exception:
+                    pass

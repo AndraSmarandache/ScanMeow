@@ -4,6 +4,7 @@ import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -42,7 +43,6 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.Surface
-import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
@@ -196,8 +196,8 @@ fun MainHomeScreen(
     cloudDocuments: List<UserCloudDocument>,
     recentDocumentsExpanded: Boolean,
     onToggleRecentDocumentsExpanded: () -> Unit,
-    bluetoothModeForPc: Boolean,
-    onBluetoothModeChange: (Boolean) -> Unit,
+    btDeviceName: String? = null,
+    onBluetoothTap: () -> Unit = {},
     onScanDocumentClick: () -> Unit = {},
     onDocumentClick: (UserCloudDocument) -> Unit = {},
     onShareCloudDocuments: suspend (List<UserCloudDocument>) -> Unit = {},
@@ -474,8 +474,8 @@ fun MainHomeScreen(
         }
 
         BluetoothRow(
-            bluetoothModeForPc = bluetoothModeForPc,
-            onBluetoothModeChange = onBluetoothModeChange,
+            deviceName = btDeviceName,
+            onTap = onBluetoothTap,
             modifier = Modifier.fillMaxWidth(),
         )
         Spacer(Modifier.height(12.dp))
@@ -484,53 +484,48 @@ fun MainHomeScreen(
 
 @Composable
 private fun BluetoothRow(
-    bluetoothModeForPc: Boolean,
-    onBluetoothModeChange: (Boolean) -> Unit,
+    deviceName: String?,
+    onTap: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
+    val connected = deviceName != null
     Surface(
-        modifier = modifier.fillMaxWidth(),
+        modifier = modifier.fillMaxWidth().clickable { onTap() },
         shape = MaterialTheme.shapes.medium,
         color = MaterialTheme.colorScheme.surfaceVariant,
     ) {
         Row(
             modifier = Modifier
                 .fillMaxWidth()
-                .padding(horizontal = 12.dp, vertical = 8.dp),
+                .padding(horizontal = 12.dp, vertical = 12.dp),
             verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.SpaceBetween,
         ) {
-            Row(
-                verticalAlignment = Alignment.CenterVertically,
-                modifier = Modifier.weight(1f),
-            ) {
-                Icon(
-                    imageVector = Icons.Filled.Bluetooth,
-                    contentDescription = null,
-                    tint = MaterialTheme.colorScheme.onSurfaceVariant,
-                )
-                Spacer(Modifier.width(12.dp))
-                Column {
+            Icon(
+                imageVector = Icons.Filled.Bluetooth,
+                contentDescription = null,
+                tint = if (connected) ScanBlue else MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+            Spacer(Modifier.width(12.dp))
+            Column {
+                Row(verticalAlignment = Alignment.CenterVertically) {
                     Text(
-                        text = stringResource(R.string.bluetooth),
+                        text = "Bluetooth",
                         style = MaterialTheme.typography.bodyLarge,
                     )
-                    Spacer(Modifier.height(2.dp))
+                    Spacer(Modifier.width(8.dp))
                     Text(
-                        text = if (bluetoothModeForPc) {
-                            stringResource(R.string.bluetooth_mode_bluetooth)
-                        } else {
-                            stringResource(R.string.bluetooth_mode_tcp)
-                        },
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        text = if (connected) "Enabled" else "Disabled",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = if (connected) Color(0xFF34A853) else MaterialTheme.colorScheme.error,
                     )
                 }
+                Spacer(Modifier.height(2.dp))
+                Text(
+                    text = if (connected) "Connected to: $deviceName" else "Tap to connect to a PC",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
             }
-            Switch(
-                checked = bluetoothModeForPc,
-                onCheckedChange = onBluetoothModeChange,
-            )
         }
     }
 }
@@ -543,8 +538,6 @@ private fun MainHomeScreenPreview() {
             cloudDocuments = emptyList(),
             recentDocumentsExpanded = false,
             onToggleRecentDocumentsExpanded = {},
-            bluetoothModeForPc = false,
-            onBluetoothModeChange = {},
         )
     }
 }

@@ -50,33 +50,39 @@ class GoogleSupabaseSignInThread(QThread):
 
         class Handler(http.server.BaseHTTPRequestHandler):
             def do_GET(self):  # noqa: N802
-                try:
-                    parsed = urllib.parse.urlparse(self.path)
-                    if parsed.path != "/callback":
-                        self.send_response(404)
-                        self.end_headers()
-                        return
-                    params = urllib.parse.parse_qs(parsed.query)
-                    code_box["code"] = (params.get("code") or [None])[0]
-                    code_box["state"] = (params.get("state") or [None])[0]
-                    code_box["error"] = (params.get("error") or [None])[0]
-
-                    self.send_response(200)
-                    self.send_header("Content-Type", "text/html; charset=utf-8")
+                parsed = urllib.parse.urlparse(self.path)
+                if parsed.path != "/callback":
+                    self.send_response(204)
                     self.end_headers()
-                    if code_box["error"]:
-                        self.wfile.write(b"<h2>Sign-in failed.</h2>You can close this tab.")
-                    else:
-                        self.wfile.write(b"<h2>Signed in.</h2>You can close this tab and return to the app.")
-                finally:
-                    done.set()
+                    return
+                params = urllib.parse.parse_qs(parsed.query)
+                code_box["code"] = (params.get("code") or [None])[0]
+                code_box["state"] = (params.get("state") or [None])[0]
+                code_box["error"] = (params.get("error") or [None])[0]
+                self.send_response(200)
+                self.send_header("Content-Type", "text/html; charset=utf-8")
+                self.end_headers()
+                if code_box["error"]:
+                    self.wfile.write(b"<h2>Sign-in failed.</h2>You can close this tab.")
+                else:
+                    self.wfile.write(b"<h2>Signed in.</h2>You can close this tab and return to the app.")
+                done.set()
 
             def log_message(self, *_args, **_kwargs):
                 return
 
         self.status.emit("Desktop: opening Google sign-in…")
         server = http.server.HTTPServer(("127.0.0.1", self._cfg.redirect_port), Handler)
-        th = threading.Thread(target=server.handle_request, daemon=True)
+        server.socket.settimeout(1.0)
+
+        def _serve():
+            while not done.is_set():
+                try:
+                    server.handle_request()
+                except Exception:
+                    pass
+
+        th = threading.Thread(target=_serve, daemon=True)
         th.start()
 
         auth_params = {

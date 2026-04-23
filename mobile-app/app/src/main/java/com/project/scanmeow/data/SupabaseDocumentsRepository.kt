@@ -114,7 +114,14 @@ class SupabaseDocumentsRepository(
             .post(pdfBytes.toRequestBody("application/pdf".toMediaType()))
             .build()
         http.newCall(uploadReq).execute().use { resp ->
-            if (!resp.isSuccessful) error("upload HTTP ${resp.code}: ${resp.body?.string()}")
+            if (!resp.isSuccessful) {
+                val body = resp.body?.string().orEmpty()
+                val msg = if (resp.code == 404 && body.contains("bucket", ignoreCase = true))
+                    "Storage bucket 'scans' not found — create it in Supabase: Dashboard → Storage → New Bucket → name: scans, private"
+                else
+                    "upload HTTP ${resp.code}: $body"
+                error(msg)
+            }
         }
         val createdAt = System.currentTimeMillis()
         val row = JSONObject()
@@ -186,7 +193,7 @@ class SupabaseDocumentsRepository(
 suspend fun supabaseSignInWithGoogleIdToken(
     http: OkHttpClient,
     googleIdToken: String,
-): Pair<String, String> = withContext(Dispatchers.IO) {
+): Triple<String, String, String> = withContext(Dispatchers.IO) {
     val base = BuildConfig.SUPABASE_URL.trimEnd('/')
     val anon = BuildConfig.SUPABASE_ANON_KEY
     val body = JSONObject()
@@ -205,8 +212,33 @@ suspend fun supabaseSignInWithGoogleIdToken(
         }
         val json = JSONObject(resp.body?.string().orEmpty())
         val access = json.getString("access_token")
+        val refresh = json.optString("refresh_token", "")
         val user = json.getJSONObject("user")
         val id = user.getString("id")
-        access to id
+        Triple(access, id, refresh)
+    }
+}
+
+suspend fun supabaseRefreshSession(
+    http: OkHttpClient,
+    refreshToken: String,
+): Triple<String, String, String> = withContext(Dispatchers.IO) {
+    val base = BuildConfig.SUPABASE_URL.trimEnd('/')
+    val anon = BuildConfig.SUPABASE_ANON_KEY
+    val body = JSONObject().put("refresh_token", refreshToken).toString()
+    val req = Request.Builder()
+        .url("$base/auth/v1/token?grant_type=refresh_token")
+        .header("apikey", anon)
+        .header("Content-Type", "application/json")
+        .post(body.toRequestBody("application/json".toMediaType()))
+        .build()
+    http.newCall(req).execute().use { resp ->
+        if (!resp.isSuccessful) error("Session refresh HTTP ${resp.code}")
+        val json = JSONObject(resp.body?.string().orEmpty())
+        val access = json.getString("access_token")
+        val newRefresh = json.optString("refresh_token", refreshToken)
+        val user = json.getJSONObject("user")
+        val id = user.getString("id")
+        Triple(access, id, newRefresh)
     }
 }

@@ -46,8 +46,10 @@ class SupabaseClient:
         return h
 
     def list_user_documents(self, *, access_token: str, limit: int = 100) -> List[CloudDocumentMeta]:
+        uid = jwt_sub(access_token)
         q = (
             f"/rest/v1/documents?select=id,file_name,storage_path,created_at_millis"
+            f"&user_id=eq.{uid}"
             f"&order=created_at_millis.desc&limit={limit}"
         )
         r = requests.get(self._url + q, headers=self._headers(access_token), timeout=30)
@@ -73,9 +75,11 @@ class SupabaseClient:
         min_created_at_millis: int,
     ) -> Optional[CloudDocumentMeta]:
         """Dacă telefonul a salvat deja PDF-ul în cloud, evităm un al doilea INSERT la primirea TCP."""
+        uid = jwt_sub(access_token)
         fn_enc = quote(file_name, safe="")
         q = (
             f"/rest/v1/documents?file_name=eq.{fn_enc}"
+            f"&user_id=eq.{uid}"
             f"&created_at_millis=gte.{min_created_at_millis}"
             f"&select=id,file_name,storage_path,created_at_millis"
             f"&order=created_at_millis.desc&limit=1"

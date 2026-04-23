@@ -58,10 +58,31 @@ def paper_whiten(gray: np.ndarray, kernel_size: int = 51, max_gain: float = 0.95
     return out
 
 
+def _find_quad(edges: np.ndarray, img_area: float, scale: float, min_area: float = 0.08):
+    """Find best 4-point convex quadrilateral from an edge map."""
+    contours, _ = cv2.findContours(edges, cv2.RETR_LIST, cv2.CHAIN_APPROX_SIMPLE)
+    for c in sorted(contours, key=cv2.contourArea, reverse=True)[:20]:
+        if cv2.contourArea(c) < img_area * min_area:
+            break
+        # Convex hull first: stabilises noisy/concave document outlines
+        hull = cv2.convexHull(c)
+        arc = cv2.arcLength(hull, True)
+        for eps in (0.01, 0.02, 0.03, 0.04, 0.05, 0.07, 0.10):
+            approx = cv2.approxPolyDP(hull, eps * arc, True)
+            if len(approx) == 4 and cv2.isContourConvex(approx):
+                pts = approx.reshape(4, 2).astype("float32") / scale
+                return order_points(pts)
+    return None
+
+
 def detect_corners(img: np.ndarray):
-    """Fast corner detection using Canny only (no GrabCut). Returns ordered corners (TL,TR,BR,BL) or None."""
-    dim_limit = 1080
-    max_dim = max(img.shape)
+    """Detect document quad corners. Returns ordered (TL, TR, BR, BL) or None.
+
+    Uses bilateral filter to preserve sharp document edges while suppressing
+    paper texture, then tries three edge maps in order of reliability.
+    """
+    dim_limit = 800
+    max_dim = max(img.shape[:2])
     scale = 1.0
     if max_dim > dim_limit:
         scale = dim_limit / max_dim
@@ -69,18 +90,33 @@ def detect_corners(img: np.ndarray):
     else:
         small = img.copy()
 
-    gray = cv2.cvtColor(small, cv2.COLOR_BGR2GRAY)
-    gray = cv2.GaussianBlur(gray, (5, 5), 0)
-    canny = cv2.Canny(gray, 50, 150)
-    canny = cv2.dilate(canny, cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (5, 5)))
+    h, w = small.shape[:2]
+    img_area = h * w
 
-    contours, _ = cv2.findContours(canny, cv2.RETR_LIST, cv2.CHAIN_APPROX_SIMPLE)
-    for c in sorted(contours, key=cv2.contourArea, reverse=True)[:10]:
-        epsilon = 0.02 * cv2.arcLength(c, True)
-        approx = cv2.approxPolyDP(c, epsilon, True)
-        if len(approx) == 4:
-            pts = np.concatenate(approx).reshape(4, 2).astype("float32") / scale
-            return order_points(pts)
+    # Bilateral filter: blurs paper texture while keeping document boundary edges sharp
+    filtered = cv2.bilateralFilter(small, 9, 75, 75)
+    gray = cv2.cvtColor(filtered, cv2.COLOR_BGR2GRAY)
+
+    # Edge map 1: Otsu-derived thresholds — adapts to scene brightness automatically
+    otsu_val, _ = cv2.threshold(gray, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
+    otsu_val = max(otsu_val, 1)
+    edges1 = cv2.Canny(gray, otsu_val * 0.5, otsu_val)
+    edges1 = cv2.dilate(edges1, cv2.getStructuringElement(cv2.MORPH_RECT, (3, 3)))
+
+    # Edge map 2: fixed moderate thresholds — reliable for well-lit docs on contrasting surface
+    edges2 = cv2.Canny(gray, 30, 100)
+    edges2 = cv2.dilate(edges2, cv2.getStructuringElement(cv2.MORPH_RECT, (3, 3)))
+
+    # Edge map 3: histogram-equalized — catches low-contrast or overexposed documents
+    eq = cv2.equalizeHist(gray)
+    edges3 = cv2.Canny(eq, 50, 150)
+    edges3 = cv2.dilate(edges3, cv2.getStructuringElement(cv2.MORPH_RECT, (3, 3)))
+
+    for edges in (edges1, edges2, edges3):
+        result = _find_quad(edges, img_area, scale)
+        if result is not None:
+            return result
+
     return None
 
 

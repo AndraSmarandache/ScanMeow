@@ -131,7 +131,7 @@ fun PdfViewerScreen(
     }
 }
 
-private fun renderPdfToBitmaps(file: File): List<Bitmap> {
+internal fun renderPdfToBitmaps(file: File): List<Bitmap> {
     val out = ArrayList<Bitmap>()
     ParcelFileDescriptor.open(file, ParcelFileDescriptor.MODE_READ_ONLY).use { pfd ->
         PdfRenderer(pfd).use { renderer ->

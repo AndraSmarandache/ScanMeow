@@ -16,12 +16,11 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.Path
+import androidx.compose.ui.graphics.PathFillType
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.ContentScale
-import androidx.compose.ui.layout.onGloballyPositioned
-import androidx.compose.ui.layout.positionInRoot
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.project.scanmeow.ui.theme.ScanBlue
@@ -126,17 +125,21 @@ fun CropAdjustScreen(
                             val sc = pts.map { imgToScreen(it) }
                             val (tl, tr, br, bl) = sc
 
-                            // Dim overlay outside the quad
+                            // Dim the area outside the quad using EvenOdd fill —
+                            // the outer rect and inner quad together leave the quad transparent
+                            val dimPath = Path().apply {
+                                fillType = PathFillType.EvenOdd
+                                moveTo(0f, 0f); lineTo(size.width, 0f)
+                                lineTo(size.width, size.height); lineTo(0f, size.height); close()
+                                moveTo(tl.x, tl.y); lineTo(tr.x, tr.y)
+                                lineTo(br.x, br.y); lineTo(bl.x, bl.y); close()
+                            }
+                            drawPath(dimPath, OverlayDim)
+
                             val quadPath = Path().apply {
                                 moveTo(tl.x, tl.y); lineTo(tr.x, tr.y)
                                 lineTo(br.x, br.y); lineTo(bl.x, bl.y); close()
                             }
-                            // Draw dim on the whole canvas, then clear the quad (use BlendMode trick via alpha)
-                            drawRect(OverlayDim)
-                            // Re-draw quad area at 0 alpha to "punch out" — use BlendMode.Clear
-                            drawPath(quadPath, Color.Transparent,
-                                blendMode = androidx.compose.ui.graphics.BlendMode.Clear)
-
                             // Blue quad border
                             drawPath(quadPath, OverlayBlue, style = Stroke(width = 2.dp.toPx()))
 

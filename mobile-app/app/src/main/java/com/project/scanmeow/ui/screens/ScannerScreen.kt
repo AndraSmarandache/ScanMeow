@@ -11,6 +11,11 @@ import androidx.camera.core.resolutionselector.ResolutionSelector
 import androidx.camera.core.resolutionselector.ResolutionStrategy
 import androidx.camera.lifecycle.ProcessCameraProvider
 import androidx.camera.view.PreviewView
+import androidx.compose.animation.core.Animatable
+import androidx.compose.animation.core.Spring
+import androidx.compose.animation.core.animateFloatAsState
+import androidx.compose.animation.core.spring
+import androidx.compose.animation.core.tween
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.gestures.detectTapGestures
@@ -25,6 +30,7 @@ import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.scale
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Color
@@ -40,6 +46,9 @@ import com.project.scanmeow.ui.theme.OverlayBlue
 import java.io.File
 import java.text.SimpleDateFormat
 import java.util.*
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 
 @Composable
 fun ScannerScreen(
@@ -86,12 +95,37 @@ private fun CameraContent(
     val context = LocalContext.current
     val lifecycleOwner = LocalLifecycleOwner.current
     val density = LocalDensity.current
+    val scope = rememberCoroutineScope()
     val navBarHeight = WindowInsets.navigationBars.asPaddingValues().calculateBottomPadding()
+
+    val galleryLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.GetContent(),
+    ) { uri ->
+        uri ?: return@rememberLauncherForActivityResult
+        scope.launch {
+            val tmp = withContext(Dispatchers.IO) {
+                val f = File(context.cacheDir, "gallery_${System.currentTimeMillis()}.jpg")
+                context.contentResolver.openInputStream(uri)?.use { input ->
+                    f.outputStream().use { output -> input.copyTo(output) }
+                }
+                f
+            }
+            if (tmp.exists() && tmp.length() > 0) onImageCaptured(tmp.absolutePath)
+        }
+    }
 
     var flashEnabled by remember { mutableStateOf(false) }
     var imageCapture by remember { mutableStateOf<ImageCapture?>(null) }
     val cameraRef = remember { mutableStateOf<Camera?>(null) }
     val previewViewRef = remember { mutableStateOf<PreviewView?>(null) }
+
+    var isCapturing by remember { mutableStateOf(false) }
+    val flashAlpha = remember { Animatable(0f) }
+    val buttonScale by animateFloatAsState(
+        targetValue = if (isCapturing) 0.82f else 1f,
+        animationSpec = spring(dampingRatio = Spring.DampingRatioMediumBouncy, stiffness = Spring.StiffnessHigh),
+        label = "captureScale",
+    )
 
     // Total height occupied by the bottom bar (controls + nav bar)
     val controlsHeight = 100.dp
@@ -188,6 +222,12 @@ private fun CameraContent(
             drawLine(color, Offset(right, bottom), Offset(right, bottom - cornerLen), strokeWidth = strokeW, cap = StrokeCap.Round)
         }
 
+        // Camera shutter flash
+        val alpha = flashAlpha.value
+        if (alpha > 0f) {
+            Box(Modifier.fillMaxSize().background(Color.White.copy(alpha = alpha)))
+        }
+
         // Bottom controls bar — sits above the system navigation bar
         Box(
             modifier = Modifier
@@ -224,12 +264,30 @@ private fun CameraContent(
                 Box(
                     modifier = Modifier
                         .size(80.dp)
+                        .scale(buttonScale)
                         .clip(CircleShape)
-                        .background(OverlayBlue),
+                        .background(if (isCapturing) OverlayBlue.copy(alpha = 0.6f) else OverlayBlue),
                     contentAlignment = Alignment.Center
                 ) {
                     IconButton(
-                        onClick = { takePhoto(context, imageCapture, onImageCaptured) },
+                        onClick = {
+                            if (!isCapturing) {
+                                isCapturing = true
+                                scope.launch {
+                                    flashAlpha.snapTo(0.92f)
+                                    flashAlpha.animateTo(0f, animationSpec = tween(280))
+                                }
+                                takePhoto(
+                                    context = context,
+                                    imageCapture = imageCapture,
+                                    onSuccess = { path ->
+                                        isCapturing = false
+                                        onImageCaptured(path)
+                                    },
+                                    onError = { isCapturing = false },
+                                )
+                            }
+                        },
                         modifier = Modifier.size(80.dp)
                     ) {
                         Box(
@@ -243,7 +301,7 @@ private fun CameraContent(
 
                 // Gallery button
                 IconButton(
-                    onClick = { /* gallery */ },
+                    onClick = { galleryLauncher.launch("image/*") },
                     modifier = Modifier.size(56.dp)
                 ) {
                     Icon(
@@ -261,9 +319,10 @@ private fun CameraContent(
 private fun takePhoto(
     context: Context,
     imageCapture: ImageCapture?,
-    onImageCaptured: (String) -> Unit
+    onSuccess: (String) -> Unit,
+    onError: () -> Unit = {},
 ) {
-    imageCapture ?: return
+    if (imageCapture == null) { onError(); return }
     val photoFile = File(
         context.filesDir,
         "scan_${SimpleDateFormat("yyyyMMdd_HHmmss", Locale.US).format(Date())}.jpg"
@@ -274,10 +333,11 @@ private fun takePhoto(
         ContextCompat.getMainExecutor(context),
         object : ImageCapture.OnImageSavedCallback {
             override fun onImageSaved(output: ImageCapture.OutputFileResults) {
-                onImageCaptured(photoFile.absolutePath)
+                onSuccess(photoFile.absolutePath)
             }
             override fun onError(exc: ImageCaptureException) {
                 Log.e("ScannerScreen", "Capture failed: ${exc.message}", exc)
+                onError()
             }
         }
     )
