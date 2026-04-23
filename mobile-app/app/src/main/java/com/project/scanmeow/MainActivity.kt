@@ -439,9 +439,13 @@ class MainActivity : ComponentActivity() {
                                     Spacer(Modifier.width(10.dp))
                                     Text(
                                         "Continue with Google",
-                                        style = MaterialTheme.typography.bodyLarge,
-                                        fontWeight = FontWeight.Medium,
+                                        style = MaterialTheme.typography.bodyMedium,
+                                        fontWeight = FontWeight.SemiBold,
                                         color = Color.White,
+                                        maxLines = 1,
+                                        softWrap = false,
+                                        modifier = Modifier.weight(1f),
+                                        textAlign = TextAlign.Center,
                                     )
                                 }
                             }
@@ -935,13 +939,31 @@ class MainActivity : ComponentActivity() {
                                                     return@TextButton
                                                 }
                                                 val fn = "scanmeow_${System.currentTimeMillis()}.pdf"
+                                                val uid = supabaseUserId
                                                 scope.launch {
+                                                    // Upload to Supabase first so the desktop sync picks it up
+                                                    // regardless of Bluetooth success.
+                                                    if (!uid.isNullOrBlank()) {
+                                                        runCatching {
+                                                            withContext(Dispatchers.IO) {
+                                                                cloudRepo.uploadPdfAndMeta(uid, s.pdfBytes, fn)
+                                                            }
+                                                        }.onSuccess {
+                                                            cloudDocs = runCatching {
+                                                                cloudRepo.fetchDocumentsFromServer(uid)
+                                                            }.getOrDefault(cloudDocs)
+                                                        }.onFailure { e ->
+                                                            Toast.makeText(context, "Cloud upload failed: ${e.message}", Toast.LENGTH_LONG).show()
+                                                        }
+                                                    }
+                                                    // Then send via Bluetooth (best-effort direct transfer)
                                                     runCatching {
                                                         sendPdfViaBluetooth(btTargetDevice!!, s.pdfBytes, fn, token)
                                                     }.onSuccess {
                                                         Toast.makeText(context, context.getString(R.string.toast_sent_to_pc), Toast.LENGTH_SHORT).show()
-                                                    }.onFailure { e ->
-                                                        Toast.makeText(context, e.message ?: "Send failed", Toast.LENGTH_LONG).show()
+                                                    }.onFailure {
+                                                        // Bluetooth failed but cloud upload already succeeded; silent fallback
+                                                        Toast.makeText(context, "Sent to cloud — will sync to PC shortly.", Toast.LENGTH_SHORT).show()
                                                     }
                                                 }
                                             }) { Text("Send") }

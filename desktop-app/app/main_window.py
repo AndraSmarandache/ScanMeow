@@ -1420,6 +1420,7 @@ class MainWindow(QMainWindow):
 
         self._bt_receiver = BluetoothPdfReceiver(inbox_dir=inbox_dir, parent=self)
         self._bt_receiver.pdf_received.connect(self._on_pdf_received)
+        self._bt_receiver.status.connect(self._on_firebase_status)
         self._bt_receiver.start()
 
         self._cloud_user_sync = None
@@ -1829,6 +1830,7 @@ def _recv_smk_file(conn, inbox_dir: str, supabase: Optional[SupabaseClient]) -> 
 
     cloud_doc_id = ""
     cloud_storage_path = ""
+    cloud_status = ""
     if access_token and supabase is not None:
         try:
             with open(out_path, "rb") as f:
@@ -1839,20 +1841,26 @@ def _recv_smk_file(conn, inbox_dir: str, supabase: Optional[SupabaseClient]) -> 
             )
             if existing is not None:
                 cloud_doc_id, cloud_storage_path = existing.doc_id, existing.storage_path
+                cloud_status = f"BT: linked existing cloud doc for {file_name}"
             else:
                 cloud_doc_id, cloud_storage_path = supabase.upload_pdf_and_row(
                     access_token=access_token, pdf_bytes=pdf_bytes, original_file_name=file_name,
                 )
+                cloud_status = f"BT: uploaded {file_name} to cloud"
         except Exception as ex:
             import traceback
             traceback.print_exc()
-            print(f"ScanMeow cloud upload failed: {ex}", flush=True)
+            cloud_status = f"BT cloud upload failed: {ex}"
+            print(cloud_status, flush=True)
+    else:
+        cloud_status = f"BT: received {file_name} (no cloud — not signed in)"
 
-    return out_path, cloud_doc_id, cloud_storage_path, file_name
+    return out_path, cloud_doc_id, cloud_storage_path, file_name, cloud_status
 
 
 class BluetoothPdfReceiver(QThread):
     pdf_received = pyqtSignal(str, str, str, str)
+    status = pyqtSignal(str)
 
     def __init__(self, *, inbox_dir: str, parent=None):
         super().__init__(parent)
@@ -1890,10 +1898,13 @@ class BluetoothPdfReceiver(QThread):
                 print(f"ScanMeow BT accept error: {e}", flush=True)
                 break
             try:
-                result = _recv_smk_file(conn, self._inbox_dir, self._supabase)
-                self.pdf_received.emit(*result)
+                path, doc_id, storage_path, fname, cloud_status = _recv_smk_file(conn, self._inbox_dir, self._supabase)
+                self.status.emit(cloud_status)
+                self.pdf_received.emit(path, doc_id, storage_path, fname)
             except Exception as e:
-                print(f"ScanMeow BT recv error: {e}", flush=True)
+                err = f"BT recv error: {e}"
+                print(err, flush=True)
+                self.status.emit(err)
             finally:
                 try:
                     conn.close()

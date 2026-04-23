@@ -52,8 +52,12 @@ class SupabaseClient:
             f"&user_id=eq.{uid}"
             f"&order=created_at_millis.desc&limit={limit}"
         )
-        r = requests.get(self._url + q, headers=self._headers(access_token), timeout=30)
-        r.raise_for_status()
+        headers = {**self._headers(access_token), "Accept": "application/json"}
+        r = requests.get(self._url + q, headers=headers, timeout=30)
+        if not r.ok:
+            raise RuntimeError(
+                f"list_user_documents HTTP {r.status_code}: {r.text[:400]}"
+            )
         rows: Any = r.json()
         out: List[CloudDocumentMeta] = []
         for row in rows:

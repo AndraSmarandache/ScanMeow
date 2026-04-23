@@ -5,7 +5,7 @@ from typing import Set
 import requests
 from PyQt5.QtCore import QThread, pyqtSignal
 
-from .supabase_client import SupabaseClient
+from .supabase_client import SupabaseClient, jwt_sub
 
 
 class SupabaseUserSyncThread(QThread):
@@ -38,11 +38,28 @@ class SupabaseUserSyncThread(QThread):
         self._document_manager = document_manager
         self._received_doc_ids: Set[str] = set()
 
+    def _is_token_expired(self) -> bool:
+        try:
+            import base64, json as _json
+            parts = self._access_token.split(".")
+            if len(parts) < 2:
+                return True
+            pad = parts[1] + "=" * ((4 - len(parts[1]) % 4) % 4)
+            payload = _json.loads(base64.urlsafe_b64decode(pad.encode()))
+            exp = payload.get("exp", 0)
+            return time.time() > exp - 30
+        except Exception:
+            return False
+
     def run(self) -> None:
         os.makedirs(self._inbox_dir, exist_ok=True)
         self.status.emit(f"Supabase: connected as {self._user_id}")
 
         while True:
+            if self._is_token_expired():
+                self.status.emit("Supabase: session expired — please sign in again.")
+                time.sleep(60)
+                continue
             try:
                 docs = self._client.list_user_documents(access_token=self._access_token, limit=50)
                 if self._document_manager is not None:
