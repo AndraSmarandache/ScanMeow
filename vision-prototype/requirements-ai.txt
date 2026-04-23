@@ -1,0 +1,8 @@
+# DocRes (install PyTorch separately if needed)
+torch
+torchvision
+opencv-python-headless>=4.2.0
+scikit-image>=0.19.3
+numpy
+einops
+tqdm

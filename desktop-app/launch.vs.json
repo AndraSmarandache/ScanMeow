@@ -1,0 +1,13 @@
+{
+  "version": "0.2.1",
+  "defaults": {},
+  "configurations": [
+    {
+      "type": "python",
+      "interpreter": "(default)",
+      "scriptType": "python",
+      "startupFile": "main.py",
+      "name": "ScanMeow"
+    }
+  ]
+}
