@@ -30,6 +30,7 @@ ScanMeow is a **cross-platform document scanning system** with three interconnec
 - [Setup Guide](#setup-guide)
 - [Environment Variables](#environment-variables)
 - [Vision Prototype](#vision-prototype)
+- [Documentation](#documentation)
 - [License](#license)
 
 ---
@@ -308,6 +309,12 @@ Content-Type: multipart/form-data
 ```
 
 Optional AI features (DocRes model) add shadow removal and appearance enhancement. The pipeline also supports a Mobile SAM model for segment-based processing.
+
+---
+
+## Documentation
+
+A full technical write-up covering system architecture, component design, data flow, and implementation details is available in [docs/ScanMeow_Documentation.pdf](docs/ScanMeow_Documentation.pdf).
 
 ---
 
