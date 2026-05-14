@@ -1,0 +1,21 @@
+# Model weights
+*.pt
+*.pkl
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+*.egg-info/
+
+# Environment / secrets
+.env
+local.properties
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Build output
+build/
+dist/
